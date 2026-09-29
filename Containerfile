@@ -4,6 +4,7 @@
 #   frontend-build  npm ci + lint + typecheck + unit tests + build of the SPA
 #   pocketbase      PocketBase binary, verified against the release checksums.txt
 #   test            Playwright image with PocketBase, SPA, API + E2E tests (`make test`)
+#   app-files       migrations, hooks and SPA with normalized file permissions
 #   runtime         the app image (last stage = default target, `make build`)
 #
 # HEALTHCHECK requires the docker image format: podman build --format docker
@@ -85,6 +86,18 @@ COPY --chmod=0755 scripts/ci-test.sh /app/scripts/ci-test.sh
 CMD ["/app/scripts/ci-test.sh"]
 
 # --------------------------------------------------------------------------
+# The app files for the runtime image. COPY keeps the file modes of the build
+# context (and Vite keeps those of frontend/public): a checkout made with a
+# strict umask (e.g. 027 -> files 0640, dirs 0750) would be unreadable for the
+# non-root runtime user. Normalize to "owner rw, everyone read, dirs traversable".
+FROM ${ALPINE_IMAGE} AS app-files
+LABEL io.getraenkeliste.project=getraenkeliste
+COPY backend/pb_migrations /app/pb_migrations
+COPY backend/pb_hooks /app/pb_hooks
+COPY --from=frontend-build /src/frontend/dist /app/pb_public
+RUN chmod -R u=rwX,go=rX /app
+
+# --------------------------------------------------------------------------
 FROM ${ALPINE_IMAGE} AS runtime
 LABEL io.getraenkeliste.project=getraenkeliste \
       org.opencontainers.image.title="Getränkeliste" \
@@ -95,9 +108,7 @@ RUN addgroup -S -g 10001 pocketbase \
  && chown pocketbase:pocketbase /pb_data
 COPY --from=pocketbase /usr/local/bin/pocketbase /usr/local/bin/pocketbase
 COPY --chmod=0755 scripts/container-entrypoint.sh /usr/local/bin/entrypoint.sh
-COPY backend/pb_migrations /app/pb_migrations
-COPY backend/pb_hooks /app/pb_hooks
-COPY --from=frontend-build /src/frontend/dist /app/pb_public
+COPY --from=app-files /app /app
 USER 10001:10001
 VOLUME /pb_data
 EXPOSE 8090
