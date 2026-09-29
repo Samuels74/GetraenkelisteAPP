@@ -1,0 +1,21 @@
+{
+  "name": "getraenkeliste-api-tests",
+  "private": true,
+  "version": "1.0.0",
+  "description": "API integration tests: rules, hooks and custom routes against a throw-away PocketBase",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.0",
+    "pocketbase": "0.28.1",
+    "typescript": "~6.0.3",
+    "vitest": "5.0.2"
+  }
+}

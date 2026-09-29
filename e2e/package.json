@@ -1,0 +1,24 @@
+{
+  "name": "getraenkeliste-e2e",
+  "private": true,
+  "version": "1.0.0",
+  "description": "End-to-end tests (Playwright) against a throw-away PocketBase serving the built SPA",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "playwright test",
+    "test:chromium": "playwright test --project=mobile-chrome --project=desktop-chrome --project=qr-camera --project=isolated-chrome --no-deps",
+    "report": "playwright show-report test-results/html-report",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0",
+    "@types/node": "^24.19.0",
+    "@types/qrcode": "^1.5.6",
+    "pocketbase": "0.28.1",
+    "qrcode": "1.5.4",
+    "typescript": "~6.0.3"
+  }
+}

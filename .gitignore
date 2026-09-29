@@ -1,0 +1,17 @@
+# local PocketBase binary + dev data (downloaded by scripts/dev-pocketbase.sh)
+.pb/
+
+# node
+node_modules/
+dist/
+*.tsbuildinfo
+
+# test output
+test-results/
+playwright-report/
+blob-report/
+coverage/
+
+# editor / OS
+.DS_Store
+*.log

@@ -1,0 +1,241 @@
+@import 'tailwindcss';
+
+/*
+ * Design tokens. Light values here, dark values below (prefers-color-scheme).
+ * Utilities: bg-canvas, bg-surface, text-fg, text-muted, border-line,
+ * bg-primary / text-on-primary, bg-primary-soft / text-on-primary-soft, …
+ */
+@theme {
+  /* Native UI fonts first (SF, Segoe UI, Roboto); Arial/Liberation before the
+     generic system-ui keyword, which maps to odd fonts on some Linux setups. */
+  --font-sans:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'Noto Sans',
+    'Liberation Sans', system-ui, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji';
+
+  --color-canvas: #f6f5f3;
+  --color-surface: #ffffff;
+  --color-surface-2: #f1efec;
+  --color-surface-3: #e7e4e0;
+  --color-line: #e3dfda;
+  --color-line-strong: #cbc5be;
+  --color-fg: #1c1917;
+  --color-muted: #66605a;
+
+  --color-primary: #c2410c;
+  --color-primary-hover: #9a3412;
+  --color-on-primary: #ffffff;
+  --color-primary-soft: #ffeedd;
+  --color-on-primary-soft: #8a2f0e;
+  --color-ring: #ea580c;
+
+  --color-danger: #b91c1c;
+  --color-danger-hover: #991b1b;
+  --color-on-danger: #ffffff;
+  --color-danger-soft: #fdecec;
+  --color-on-danger-soft: #991b1b;
+
+  --color-success: #15803d;
+  --color-success-soft: #e7f7ec;
+  --color-on-success-soft: #166534;
+
+  --color-warning-soft: #fff4cc;
+  --color-on-warning-soft: #7a4a05;
+
+  --animate-pop: pop 380ms ease-out;
+  --animate-fade-in: fade-in 160ms ease-out;
+  --animate-sheet-in: sheet-in 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+
+  @keyframes pop {
+    0% {
+      transform: scale(0.6);
+      opacity: 0;
+    }
+    60% {
+      transform: scale(1.15);
+      opacity: 1;
+    }
+    100% {
+      transform: scale(1);
+      opacity: 1;
+    }
+  }
+  @keyframes fade-in {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+  @keyframes sheet-in {
+    from {
+      transform: translateY(24px);
+      opacity: 0;
+    }
+    to {
+      transform: translateY(0);
+      opacity: 1;
+    }
+  }
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-canvas: #0e0c0b;
+    --color-surface: #1a1716;
+    --color-surface-2: #23201e;
+    --color-surface-3: #2e2a27;
+    --color-line: #34302c;
+    --color-line-strong: #4a4540;
+    --color-fg: #f4f1ee;
+    --color-muted: #aaa29b;
+
+    --color-primary: #fb923c;
+    --color-primary-hover: #fdba74;
+    --color-on-primary: #1f0f05;
+    --color-primary-soft: #3a2113;
+    --color-on-primary-soft: #fdc28e;
+    --color-ring: #fb923c;
+
+    --color-danger: #f87171;
+    --color-danger-hover: #fca5a5;
+    --color-on-danger: #200808;
+    --color-danger-soft: #3a1515;
+    --color-on-danger-soft: #fca5a5;
+
+    --color-success: #4ade80;
+    --color-success-soft: #10301c;
+    --color-on-success-soft: #86efac;
+
+    --color-warning-soft: #362a0c;
+    --color-on-warning-soft: #fcd34d;
+  }
+}
+
+@custom-variant dark (@media (prefers-color-scheme: dark));
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+    color-scheme: light dark;
+    background-color: var(--color-canvas);
+  }
+
+  body {
+    min-height: 100dvh;
+    background-color: var(--color-canvas);
+    color: var(--color-fg);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    -webkit-tap-highlight-color: transparent;
+    overflow-x: hidden;
+  }
+
+  /* No double-tap zoom on controls (fast repeated taps on tiles). */
+  a,
+  button,
+  input,
+  select,
+  textarea,
+  label,
+  summary,
+  [role='button'] {
+    touch-action: manipulation;
+  }
+
+  /* ≥ 16 px prevents iOS from zooming into focused inputs. */
+  input,
+  select,
+  textarea {
+    font-size: max(16px, 1rem);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-ring);
+    outline-offset: 2px;
+  }
+
+  button:not(:disabled),
+  [role='button']:not([aria-disabled='true']) {
+    cursor: pointer;
+  }
+
+  dialog {
+    color: var(--color-fg);
+  }
+
+  dialog::backdrop {
+    background: rgb(0 0 0 / 0.5);
+  }
+
+  dialog[open] {
+    animation: var(--animate-sheet-in);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after,
+    dialog[open] {
+      animation-duration: 1ms !important;
+      transition-duration: 1ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
+
+/* Safe-area helpers (viewport-fit=cover). */
+@utility pt-safe {
+  padding-top: env(safe-area-inset-top);
+}
+@utility pb-safe {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+@utility px-safe {
+  padding-left: max(1rem, env(safe-area-inset-left));
+  padding-right: max(1rem, env(safe-area-inset-right));
+}
+/* Space for the fixed bottom tab bar (64px) + safe area. */
+@utility pb-nav {
+  padding-bottom: calc(5.5rem + env(safe-area-inset-bottom));
+}
+/* … plus room for a toast above the tab bar (content can scroll above it). */
+@utility pb-nav-toast {
+  padding-bottom: calc(12rem + env(safe-area-inset-bottom));
+}
+@utility scrollbar-none {
+  scrollbar-width: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+/*
+ * Toasts never block taps on the content below them (e.g. offering tiles) and
+ * never stay paused because a finger/mouse happens to rest where they appear.
+ * Only their buttons ("Rückgängig") are interactive.
+ */
+[data-sonner-toaster],
+[data-sonner-toaster] [data-sonner-toast] {
+  pointer-events: none !important;
+}
+[data-sonner-toaster] {
+  font-family: var(--font-sans) !important;
+}
+[data-sonner-toaster] [data-sonner-toast] button {
+  pointer-events: auto !important;
+}
+
+@media print {
+  @page {
+    size: A4;
+    margin: 12mm;
+  }
+  html,
+  body {
+    background: #fff !important;
+    color: #000 !important;
+  }
+}

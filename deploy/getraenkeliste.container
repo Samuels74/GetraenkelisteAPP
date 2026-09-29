@@ -1,0 +1,57 @@
+# Podman Quadlet unit: runs Getränkeliste as a systemd *user* service.
+#
+# Install (as the user that owns the image, e.g. after `make build`):
+#   mkdir -p ~/.config/containers/systemd
+#   cp deploy/getraenkeliste.container ~/.config/containers/systemd/
+#   systemctl --user daemon-reload
+#   systemctl --user start getraenkeliste.service
+#   loginctl enable-linger "$USER"      # keep it running without a login session
+#
+# Status / logs:   systemctl --user status getraenkeliste
+#                  journalctl --user -u getraenkeliste -f
+# New image:       make build && systemctl --user restart getraenkeliste
+#                  (or `podman auto-update`, see AutoUpdate below)
+#
+# Use either this service or `make run` – both use the container name
+# "getraenkeliste" and the volume "getraenkeliste-data" (same data).
+#
+# Backups: PocketBase writes daily backups (03:00 UTC, latest 14 kept) into the
+# volume (pb_data/backups); download them via the dashboard (Settings → Backups).
+# Cold volume export: stop the service first with
+#   systemctl --user stop getraenkeliste
+# (not `podman stop` – Restart=always would start it again right away), then
+#   podman volume export getraenkeliste-data -o getraenkeliste-data.tar
+#   systemctl --user start getraenkeliste
+
+[Unit]
+Description=Getränkeliste (PocketBase + web app)
+Wants=network-online.target
+After=network-online.target
+
+[Container]
+ContainerName=getraenkeliste
+Image=localhost/getraenkeliste:latest
+# Named volume with the database, uploaded files and backups.
+Volume=getraenkeliste-data:/pb_data
+# Plain HTTP; TLS is terminated by the reverse proxy (deploy/reverse-proxy.md).
+# If the proxy runs on this host (not in a container), prefer binding to
+# loopback only: PublishPort=127.0.0.1:8090:8090
+PublishPort=8090:8090
+# Optional: superuser for the PocketBase dashboard (/_/), upserted at start,
+# and a 32 character key that encrypts the stored settings. Put secrets into an
+# env file (chmod 600) instead of this unit:
+#   PB_SUPERUSER_EMAIL=ops@example.com
+#   PB_SUPERUSER_PASSWORD=...
+#   PB_ENCRYPTION_KEY=...
+#EnvironmentFile=%h/.config/getraenkeliste.env
+# The service becomes "started" once the image HEALTHCHECK (/api/health) passes.
+Notify=healthy
+# `podman auto-update` restarts the service when localhost/getraenkeliste:latest changed.
+AutoUpdate=local
+
+[Service]
+Restart=always
+TimeoutStartSec=120
+
+[Install]
+WantedBy=default.target
