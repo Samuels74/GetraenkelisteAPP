@@ -1,0 +1,40 @@
+# Build context for the Containerfile – read by Docker (`docker compose build`)
+# and by Podman/Buildah (`make build`; Buildah falls back to .dockerignore when
+# there is no .containerignore). Keep it small: only sources are needed,
+# dependencies are installed inside the build stages.
+
+# VCS, editors, dev container
+.git
+.gitignore
+.devcontainer
+.vscode
+.idea
+**/.DS_Store
+
+# local PocketBase binary + dev data
+.pb
+
+# dependencies and build output
+**/node_modules
+**/dist
+**/*.tsbuildinfo
+**/.vite
+**/coverage
+
+# test output
+test-results
+**/test-results
+**/playwright-report
+**/blob-report
+**/*.log
+
+# not needed inside the images (.env holds secrets for docker compose)
+index.html
+docs
+README.md
+deploy
+Makefile
+compose.yaml
+compose.override.yaml
+.env
+.env.*

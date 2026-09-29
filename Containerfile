@@ -1,4 +1,5 @@
-# Getränkeliste – multi-stage image build (Podman/Buildah, see Makefile).
+# Getränkeliste – multi-stage image build: Podman (`make build`, see Makefile)
+# or Docker (`docker compose build`, see compose.yaml).
 #
 #   frontend-build  npm ci + lint + typecheck + unit tests + build of the SPA
 #   pocketbase      PocketBase binary, verified against the release checksums.txt

@@ -1,7 +1,8 @@
 # Reverse proxy
 
-The container serves plain HTTP on port `8090` (published on the host by `make run`
-or the Quadlet unit). TLS is terminated by your existing reverse proxy. Requirements:
+The container serves plain HTTP on port `8090` (published on the host by
+`docker compose`, `make run` or the Quadlet unit). TLS is terminated by your existing
+reverse proxy. Requirements:
 
 1. **One origin** – forward everything (`/` SPA, `/api/`, `/_/` dashboard) to the app.
 2. **Realtime** – `/api/realtime` is a Server-Sent-Events stream: no response
@@ -16,6 +17,31 @@ or the Quadlet unit). TLS is terminated by your existing reverse proxy. Requirem
 
 Examples use `getraenke.example.com`, the app on `127.0.0.1:8090` and `192.168.1.0/24`
 as admin network – adjust.
+
+## Docker Compose
+
+`compose.yaml` publishes the app on `127.0.0.1:8090` (change it in `.env`) – right for
+a proxy installed on the host; use the snippets below as they are.
+
+If the proxy runs in a Docker container itself, don't publish a port: put the app on
+the proxy's network with a `compose.override.yaml` next to `compose.yaml` (merged
+automatically by `docker compose`, gitignored) and point the proxy at
+`http://getraenkeliste:8090` instead of `127.0.0.1:8090`:
+
+```yaml
+services:
+  getraenkeliste:
+    ports: !reset []
+    networks: [proxy]
+
+networks:
+  proxy:
+    external: true
+    name: proxy   # your proxy's network (docker network ls)
+```
+
+Then `docker compose up -d`. PocketBase sees the proxy container's IP as the client
+address – configure the trusted proxy header (below) as usual.
 
 ## nginx
 

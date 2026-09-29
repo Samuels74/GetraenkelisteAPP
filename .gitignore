@@ -15,3 +15,7 @@ coverage/
 # editor / OS
 .DS_Store
 *.log
+
+# docker compose: local settings/secrets and local overrides
+.env
+compose.override.yaml

@@ -1,0 +1,45 @@
+# Getränkeliste – Docker Compose
+#
+#   cp .env.example .env          # adjust port / bind address / optional superuser
+#   docker compose up -d --build  # build the image (runs the frontend checks) and start
+#   docker compose logs -f
+#
+# One container: PocketBase serving the API and the web app on plain HTTP port
+# 8090. TLS is terminated by your reverse proxy – see deploy/reverse-proxy.md
+# (also for putting the app on the proxy's Docker network instead of
+# publishing a port). Data lives in the named volume "getraenkeliste-data".
+
+name: getraenkeliste
+
+services:
+  getraenkeliste:
+    build:
+      context: .
+      dockerfile: Containerfile
+      target: runtime
+    image: getraenkeliste:latest
+    container_name: getraenkeliste
+    restart: unless-stopped
+    ports:
+      # default: only reachable from the host itself (reverse proxy on the host)
+      - "${GETRAENKELISTE_BIND:-127.0.0.1}:${GETRAENKELISTE_PORT:-8090}:8090"
+    volumes:
+      - data:/pb_data
+    environment:
+      # optional, see .env.example
+      PB_SUPERUSER_EMAIL: ${PB_SUPERUSER_EMAIL:-}
+      PB_SUPERUSER_PASSWORD: ${PB_SUPERUSER_PASSWORD:-}
+      PB_ENCRYPTION_KEY: ${PB_ENCRYPTION_KEY:-}
+    # PocketBase only writes to /pb_data (database, backups) and /tmp
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    # healthcheck: defined in the image (GET /api/health)
+
+volumes:
+  data:
+    name: getraenkeliste-data

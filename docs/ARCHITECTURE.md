@@ -11,8 +11,9 @@ deviate, update this document in the same change.
 - Mobile-first UI (phones at a bar/counter); desktop is secondary but must work.
 - UI language: **German**. Code, comments, docs: English.
 - Exactly one running instance, one database, low traffic.
-- Built, tested and run in containers with **Podman** (no compose provider available –
-  plain `podman` commands wrapped in a `Makefile`).
+- Built, tested and run in containers: development machine with **Podman** (plain
+  `podman` commands wrapped in a `Makefile`), production server with **Docker Compose**
+  (latest Docker, x86_64 only).
 - TLS is terminated by the operator's **existing reverse proxy**; the app container
   only exposes plain HTTP on port `8090`.
 
@@ -35,9 +36,10 @@ deviate, update this document in the same change.
 /
 ├── index.html                  # LEGACY app (served by GitHub Pages) – do not modify
 ├── docs/ARCHITECTURE.md        # this file
-├── Makefile                    # entry point: make dev | build | test | run | stop | logs
+├── Makefile                    # Podman entry point: make dev | build | test | run | stop | logs
+├── compose.yaml                # Docker Compose (server); settings in .env (template .env.example)
 ├── Containerfile               # multi-stage: frontend build → runtime; plus `test` target
-├── .containerignore
+├── .dockerignore               # build context filter – read by Docker and Podman/Buildah
 ├── scripts/                    # helper scripts used by the Makefile / containers
 │   └── dev-pocketbase.sh       # downloads PocketBase to .pb/ (gitignored) and runs it for dev
 ├── deploy/                     # Quadlet unit, reverse-proxy notes/examples
@@ -284,6 +286,13 @@ Behavior details:
 
 ## 7. Containers & operations
 
+- Server: `docker compose up -d --build` builds the `runtime` target as
+  `getraenkeliste:latest` and runs it as container `getraenkeliste` with the named volume
+  `getraenkeliste-data` at `/pb_data`, `restart: unless-stopped`, published on
+  `${GETRAENKELISTE_BIND:-127.0.0.1}:${GETRAENKELISTE_PORT:-8090}` (from `.env`), read-only
+  root filesystem + tmpfs `/tmp`, all capabilities dropped, `no-new-privileges`. A
+  gitignored `compose.override.yaml` can replace the published port with the reverse
+  proxy's Docker network (`deploy/reverse-proxy.md`).
 - `make build` → image `localhost/getraenkeliste:latest` (the frontend's lint, typecheck,
   unit tests and build run inside the build stage; PocketBase binary is downloaded and
   verified against the release checksums).
