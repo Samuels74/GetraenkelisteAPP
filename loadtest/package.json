@@ -1,0 +1,23 @@
+{
+  "name": "getraenkeliste-loadtest",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Load test: deterministic data generator (2000 persons, 5 users, ~15k bookings), interactive load-test instance and performance checks against a throw-away PocketBase",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "seed": "node src/cli/seed.ts",
+    "dev": "node src/cli/dev.ts",
+    "loadtest": "node src/cli/run.ts",
+    "ui": "node src/cli/ui.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0",
+    "@types/node": "^24.19.0",
+    "pocketbase": "0.28.1",
+    "typescript": "~6.0.3"
+  }
+}

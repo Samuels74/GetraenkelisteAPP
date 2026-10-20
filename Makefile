@@ -18,6 +18,7 @@ VOLUME         ?= getraenkeliste-data
 PORT           ?= 8090
 PB_PORT        ?= 8090
 VITE_PORT      ?= 5173
+LOADTEST_PORT  ?= 8091
 PB_VERSION     ?= 0.40.4
 
 # All images/layers built here carry this label; only dangling images with it
@@ -32,10 +33,10 @@ BUILD_FLAGS    ?= --format docker --layers --build-arg PB_VERSION=$(PB_VERSION)
 build_stage  = $(PODMAN) build $(BUILD_FLAGS) --target $(1) -t $(2) -f Containerfile .
 prune_images = $(PODMAN) image prune -f --filter label=$(PROJECT_LABEL) >/dev/null
 
-.PHONY: help dev build test test-api run stop logs clean clean-data
+.PHONY: help dev build test test-api loadtest-dev loadtest run stop logs clean clean-data
 
 help: ## show the available targets
-	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "}; {printf "  make %-11s %s\n", $$1, $$2}'
+	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "}; {printf "  make %-13s %s\n", $$1, $$2}'
 
 dev: ## PocketBase (PB_PORT=8090) + Vite dev server (VITE_PORT=5173), no containers
 	PB_PORT=$(PB_PORT) VITE_PORT=$(VITE_PORT) scripts/dev.sh
@@ -65,6 +66,25 @@ test: ## API + E2E tests inside the test image (E2E_WORKERS=n); reports -> ./tes
 test-api: ## API tests locally without Podman (uses .pb/pocketbase)
 	scripts/dev-pocketbase.sh --download-only
 	cd backend/tests && { [ -d node_modules ] || npm ci; } && npm test
+
+# Load test, interactive part (docs/LOADTEST.md): a fresh dataset in
+# .pb/loadtest-data, the production SPA build served by PocketBase, in the
+# foreground until Ctrl+C. LOADTEST_KEEP=1 reuses the last dataset,
+# LOADTEST_HTTP=0.0.0.0:8091 listens on all interfaces (well-known passwords!).
+loadtest-dev: ## seed load-test data, serve the app on LOADTEST_PORT=8091 (LOADTEST_KEEP=1 reuses)
+	scripts/dev-pocketbase.sh --download-only
+	cd loadtest && { [ -d node_modules ] || npm ci; } && LOADTEST_PORT=$(LOADTEST_PORT) node src/cli/dev.ts --build-frontend
+
+# Load test, automated part (docs/LOADTEST.md "Performance checks"): a
+# throw-away PocketBase on a free port with the dataset, the API scenarios and
+# the browser checks against the production SPA build; report in
+# ./test-results/loadtest/, exit code 1 when a FAIL budget is violated.
+# LOADTEST_QUICK=1 (short run), LOADTEST_SCENARIOS=A1,A2,U4 (subset),
+# LOADTEST_UI=0 (API only), LOADTEST_SOAK=1 (adds the 35-minute soak).
+loadtest: ## performance checks (LOADTEST_QUICK=1: short run); report -> ./test-results/loadtest
+	scripts/dev-pocketbase.sh --download-only
+	cd frontend && { [ -d node_modules ] || npm ci; } && npm run build
+	cd loadtest && { [ -d node_modules ] || npm ci; } && node src/cli/run.ts
 
 run: ## start the app container: port PORT=8090, volume getraenkeliste-data
 	$(PODMAN) run -d --replace --name $(CONTAINER) \

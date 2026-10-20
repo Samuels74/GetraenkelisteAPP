@@ -115,8 +115,44 @@ backend/pb_hooks        server-side logic: price snapshot, delete guards, user r
 backend/tests           API integration tests
 frontend/               React app (Vite, TypeScript, Tailwind)
 e2e/                    Playwright end-to-end tests
+loadtest/               load test: data generator, interactive instance, performance checks
 deploy/                 Quadlet unit, reverse-proxy guide
 ```
+
+## Load test
+
+A deterministic dataset at the size of a big club – 2000 persons (numbers `1`–`2000`), 5 users
+and 5–10 bookings per person (about 15,000, spread over the last 60 days), every booking
+created through the REST API by one of the users – for trying the app with realistic data
+volume, and automated performance checks against it. Method, budgets and results:
+[docs/LOADTEST.md](docs/LOADTEST.md).
+Where the app slows down and why (findings of 2026-10-20 with fix directions): [docs/LOADTEST-FINDINGS.md](docs/LOADTEST-FINDINGS.md).
+
+```sh
+make loadtest-dev                   # seed a fresh dataset, serve the app on http://127.0.0.1:8091/
+LOADTEST_KEEP=1 make loadtest-dev   # reuse the last dataset instead of seeding again
+make loadtest                       # performance checks (about 12 min), report in test-results/loadtest/
+LOADTEST_QUICK=1 make loadtest      # short smoke run (about 3 min)
+```
+
+Log in with `user1` … `user5` or `admin`, password `loadtest` (no password change asked); the
+dashboard (`/_/`) takes `loadtest@example.com` / `loadtest`. Ctrl+C stops the app. The data
+lives in `.pb/loadtest-data`, port 8090 stays free for `make dev`. `LOADTEST_PORT=…` picks
+another port, `LOADTEST_HTTP=0.0.0.0:8091` makes it reachable from phones on the LAN (mind the
+well-known passwords; the camera for QR scanning needs HTTPS – see "Phones and HTTPS"). For
+frontend work with hot reload on the same data: stop it, then run
+`PB_DATA_DIR=.pb/loadtest-data make dev`.
+
+`make loadtest` rebuilds the SPA (`frontend/dist`), starts its own throw-away PocketBase on a free
+port (8090/8091 stay untouched; it serves a snapshot copy of the build), seeds the dataset and
+runs the performance checks: bar rushes with phones and a laptop that keep
+real realtime connections and refetch like the app, the CSV export, bursts, a concurrency sweep up
+to 80 devices, write contention, realtime fan-out and the login rate limiter (API scenarios
+A1–A11), plus screen timings in Chromium on a throttled phone and a desktop (browser checks
+U1–U11). Every metric is checked against a WARN / FAIL budget; the report
+`test-results/loadtest/report.md` starts with the verdict and the findings, `results.json` holds
+the raw numbers. The exit code is 1 when a FAIL budget is violated. `LOADTEST_SCENARIOS=A1,A2,U4`
+runs a subset, `LOADTEST_UI=0` skips the browser, `LOADTEST_SOAK=1` adds a 35-minute soak.
 
 ## Legacy app
 

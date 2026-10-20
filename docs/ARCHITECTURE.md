@@ -35,8 +35,8 @@ deviate, update this document in the same change.
 ```
 /
 ├── index.html                  # LEGACY app (served by GitHub Pages) – do not modify
-├── docs/ARCHITECTURE.md        # this file
-├── Makefile                    # Podman entry point: make dev | build | test | run | stop | logs
+├── docs/ARCHITECTURE.md        # this file (+ LOADTEST.md: load test method and results; LOADTEST-FINDINGS.md: findings)
+├── Makefile                    # Podman entry point: make dev | build | test | run | stop | logs | loadtest-dev | loadtest
 ├── compose.yaml                # Docker Compose (server); settings in .env (template .env.example)
 ├── Containerfile               # multi-stage: frontend build → runtime; plus `test` target
 ├── .dockerignore               # build context filter – read by Docker and Podman/Buildah
@@ -49,11 +49,18 @@ deviate, update this document in the same change.
 │   └── tests/                  # API integration tests (own package.json; Vitest + pocketbase SDK)
 ├── frontend/                   # Vite React app (own package.json)
 │   └── dist/                   # build output → served by PocketBase as its public dir
-└── e2e/                        # Playwright end-to-end tests (own package.json)
+├── e2e/                        # Playwright end-to-end tests (own package.json)
+└── loadtest/                   # load test (own package.json): data generator, make loadtest-dev, make loadtest
+    ├── src/                    # library modules (instance, dataset, seed, verify, …) + cli/
+    │   ├── perf/               # performance checks: measurement core, API scenarios, runner, report
+    │   ├── ui/                 # browser checks U1–U11 (runUiScenarios); probe.js = in-page timing
+    │   └── cli/                # seed.ts, dev.ts (make loadtest-dev), run.ts (make loadtest), ui.ts (UI checks alone)
+    └── support/                # TEST-ONLY *.pb.js routes for load-test instances (never deployed)
 ```
 
-Each of `backend/tests`, `frontend`, `e2e` is an independent npm package (no workspaces).
-Node **24 LTS**.
+Each of `backend/tests`, `frontend`, `e2e`, `loadtest` is an independent npm package (no
+workspaces). Node **24 LTS**. `loadtest/` runs its TypeScript directly with Node's type
+stripping (no build step; `npm run typecheck`); it is not part of any image.
 
 ### npm script contract (used by the Containerfile)
 
@@ -305,6 +312,16 @@ Behavior details:
   `--restart=unless-stopped`).
 - `make dev` → local development without containers: PocketBase (`127.0.0.1:8090`) +
   Vite dev server (`5173`).
+- `make loadtest-dev` → the load-test dataset (2000 persons, 5 users, ~15k bookings;
+  [LOADTEST.md](LOADTEST.md)) in `.pb/loadtest-data`, served with the production SPA build
+  by PocketBase on `127.0.0.1:8091` (`LOADTEST_PORT`) until Ctrl+C; `LOADTEST_KEEP=1` reuses
+  the last dataset.
+- `make loadtest` → the automated performance checks ([LOADTEST.md](LOADTEST.md)): rebuilds
+  the SPA, a throw-away PocketBase on a free port serving a snapshot of it with that dataset, API
+  scenarios and browser timings
+  checked against WARN/FAIL budgets, report in `./test-results/loadtest/`; exit code 1 when a
+  FAIL budget is violated (`LOADTEST_QUICK=1`, `LOADTEST_SCENARIOS=…`, `LOADTEST_UI=0`,
+  `LOADTEST_SOAK=1`).
 - Optional env: `PB_SUPERUSER_EMAIL` / `PB_SUPERUSER_PASSWORD` → superuser for the
   PocketBase dashboard (`/_/`) is upserted at container start; `PB_ENCRYPTION_KEY`
   (32 chars) encrypts the stored settings.
@@ -339,11 +356,27 @@ scripts (host paths differ); use named volumes and `podman cp`.
 | Frontend unit/component | Vitest (+ Testing Library) – 172 tests | `frontend/src/**/*.test.ts(x)`; runs in the image build |
 | API / rules / hooks | Vitest + pocketbase SDK against a real PocketBase – 82 tests | `backend/tests`; runs in `make test` |
 | End-to-end | Playwright – 141 tests: Pixel 7 (Chromium), iPhone (WebKit), Desktop Chrome; QR scanning via Chromium fake camera (`qr-camera`); tests that need a quiet server run afterwards in `isolated-chrome` / `isolated-safari` | `e2e/`; runs in `make test` |
+| Load test | Node (pocketbase SDK for the dataset, `node:http` + real realtime streams for the performance checks): deterministic dataset (2000 persons, 5 users, ~15k bookings created through the REST API, read back and verified); interactive instance `make loadtest-dev`; performance checks `make loadtest` – API scenarios with virtual SPA devices (real realtime connections, open-loop bar rushes, sweep, export, write contention, fan-out, rate limiter) and UI checks with Playwright/Chromium (phone = Pixel 7 + 4× CPU, desktop) against WARN/FAIL budgets – method, budgets and results in [LOADTEST.md](LOADTEST.md) | `loadtest/`; not part of `make test` |
 
 Both test harnesses start their own throw-away PocketBase, create a throw-away
 superuser and switch the login rate limiter off through the settings API (all parallel
-workers share one IP). E2E tests are parallel-safe: every test uses unique names,
-cleans up after itself and never changes the seeded `admin` password; regression tests
-for fixed bugs are tagged `@regression`.
+workers share one IP); so do the load test's automated runs. `make loadtest-dev` instead
+keeps a persistent instance (`.pb/loadtest-data`, fixed superuser `loadtest@example.com`)
+and switches the limiter off only while seeding. Test-only routes
+(`backend/tests/support/test-routes.pb.js`, `loadtest/support/zz_loadtest-routes.pb.js`)
+are copied next to the app hooks of these test and load-test instances only – never into
+`backend/pb_hooks` or an image; the load test creates and deletes directories only below
+the OS temp dir or `.pb/`, and only those it created itself (marker file). E2E tests are
+parallel-safe: every test uses unique names, cleans up after itself and never changes the
+seeded `admin` password; regression tests for fixed bugs are tagged `@regression`.
+
+The performance checks (`make loadtest`) measure only their own throw-away instance – they
+create and delete bookings, switch the planner statistics to the state of a production database
+(PocketBase's nightly `PRAGMA optimize`, through a test-only route) and finally switch the rate
+limiter on again (A9). All virtual devices share 127.0.0.1, which is why the login rate limiter is
+off and why scenarios avoid empty filtered lists (PocketBase throttles those per client IP,
+see LOADTEST.md). A FAIL budget (user-visible problem) makes the run exit with 1; WARN budgets
+(noticeable delay, regression margin) are only reported. The numbers depend on the machine:
+the report records CPU, load and whether other processes kept the machine busy.
 
 Manual test on real phones (camera, via the HTTPS reverse proxy) is done by the operator.
