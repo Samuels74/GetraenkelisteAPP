@@ -51,7 +51,7 @@ export function formatSeedSummary(summary: SeedSummary): string[] {
     `Timings (concurrency ${options.concurrency})`,
     `  setup      ${seconds(steps.setup.durationMs)}`,
     `  persons    ${createStep(steps.persons, 'created')}`,
-    `  bookings   ${createStep(steps.bookings, 'created')}`,
+    `  bookings   ${createStep(steps.bookings, summary.creationOrder === 'chronological' ? 'created (chronological order)' : 'created')}`,
     `  backdate   ${options.backdate ? `${int(steps.backdate.count)} bookings in ${steps.backdate.requests} requests, ${seconds(steps.backdate.durationMs)}` : 'skipped'}`,
     `  verify     ${options.verify ? `${steps.verify.count} checks, ${seconds(steps.verify.durationMs)}` : 'skipped'}`,
     `  total      ${seconds(summary.durationMs)}`,

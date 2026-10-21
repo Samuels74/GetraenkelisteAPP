@@ -1,6 +1,7 @@
 /**
  * Full-screen person picker: search (number / name / nickname), QR scan or
- * create a new person. Used by the booking screen.
+ * create a new person. Used by the booking screen and (without "create") by
+ * the person filter of Buchungen.
  */
 import { useQueryClient } from '@tanstack/react-query';
 import { Check, ScanLine, Search, UserPlus } from 'lucide-react';
@@ -10,6 +11,7 @@ import { Button } from '../../components/ui/Button';
 import { Dialog } from '../../components/ui/Dialog';
 import { EmptyState, NumberBadge, QueryError } from '../../components/ui/Feedback';
 import { Spinner } from '../../components/ui/Spinner';
+import { formatCount } from '../../lib/money';
 import { findPersonByNumber, isValidPersonNumber, searchPersons } from '../../lib/search';
 import type { PersonRecord } from '../../lib/types';
 import { vibrate, VIBRATE_ERROR, VIBRATE_SUCCESS } from '../../lib/vibrate';
@@ -29,6 +31,8 @@ interface PersonPickerProps {
   /** Name of the offering that will be booked right after selecting. */
   pendingOfferingName?: string | null;
   selectedPersonId?: string | null;
+  /** Offer "Neue Person" (default). Off where a new person makes no sense (a filter). */
+  allowCreate?: boolean;
 }
 
 export function PersonPicker(props: PersonPickerProps) {
@@ -48,6 +52,7 @@ function PersonPickerDialog({
   initialMode = 'search',
   pendingOfferingName,
   selectedPersonId,
+  allowCreate = true,
 }: PersonPickerProps) {
   const persons = usePersons();
   const queryClient = useQueryClient();
@@ -101,7 +106,8 @@ function PersonPickerDialog({
   }
 
   const trimmedQuery = query.trim();
-  const canCreateFromQuery = isValidPersonNumber(trimmedQuery) && !findPersonByNumber(all, trimmedQuery);
+  const canCreateFromQuery =
+    allowCreate && isValidPersonNumber(trimmedQuery) && !findPersonByNumber(all, trimmedQuery);
 
   return (
     <Dialog
@@ -112,9 +118,10 @@ function PersonPickerDialog({
       testId="person-picker"
     >
       <div ref={bodyRef} className="space-y-4">
-        {pendingOfferingName && mode !== 'create' ? (
+        {pendingOfferingName ? (
           <p className="rounded-2xl bg-primary-soft px-4 py-3 text-sm text-on-primary-soft" data-testid="pending-offering">
-            Nach der Auswahl wird <strong>{pendingOfferingName}</strong> gebucht.
+            {/* "Anlegen und auswählen" books it too */}
+            Nach {mode === 'create' ? 'dem Anlegen' : 'der Auswahl'} wird <strong>{pendingOfferingName}</strong> gebucht.
           </p>
         ) : null}
 
@@ -145,7 +152,7 @@ function PersonPickerDialog({
                   className="block h-14 w-full rounded-2xl border border-line-strong bg-surface pr-4 pl-11 text-lg shadow-sm focus:border-primary focus:outline-2 focus:outline-offset-0 focus:outline-primary/40"
                 />
               </label>
-              <div className="grid grid-cols-2 gap-2">
+              <div className={allowCreate ? 'grid grid-cols-2 gap-2' : 'grid gap-2'}>
                 <Button
                   variant="soft"
                   icon={<ScanLine className="size-5" aria-hidden />}
@@ -156,21 +163,26 @@ function PersonPickerDialog({
                 >
                   QR scannen
                 </Button>
-                <Button
-                  icon={<UserPlus className="size-5" aria-hidden />}
-                  onClick={() => startCreate(isValidPersonNumber(trimmedQuery) ? trimmedQuery : '', 'search')}
-                >
-                  Neue Person
-                </Button>
+                {allowCreate ? (
+                  <Button
+                    icon={<UserPlus className="size-5" aria-hidden />}
+                    onClick={() => startCreate(isValidPersonNumber(trimmedQuery) ? trimmedQuery : '', 'search')}
+                  >
+                    Neue Person
+                  </Button>
+                ) : null}
               </div>
             </div>
 
-            {persons.isPending ? (
-              <div className="flex justify-center py-8 text-primary">
-                <Spinner label="Personen werden geladen …" />
-              </div>
-            ) : persons.isError ? (
-              <QueryError error={persons.error} onRetry={() => void persons.refetch()} />
+            {/* (a failed background refresh keeps the loaded persons) */}
+            {!persons.data ? (
+              persons.isError ? (
+                <QueryError error={persons.error} onRetry={() => void persons.refetch()} />
+              ) : (
+                <div className="flex justify-center py-8 text-primary">
+                  <Spinner label="Personen werden geladen …" />
+                </div>
+              )
             ) : results.length === 0 ? (
               <EmptyState title={all.length === 0 ? 'Noch keine Personen' : 'Keine Person gefunden'}>
                 {canCreateFromQuery ? (
@@ -183,7 +195,7 @@ function PersonPickerDialog({
                     Person {trimmedQuery} anlegen
                   </Button>
                 ) : all.length === 0 ? (
-                  'Lege die erste Person an.'
+                  allowCreate ? 'Lege die erste Person an.' : null
                 ) : (
                   'Suche nach Nummer, Name oder Nickname.'
                 )}
@@ -218,7 +230,7 @@ function PersonPickerDialog({
                 })}
                 {results.length > MAX_RESULTS ? (
                   <li className="px-2 py-3 text-center text-sm text-muted">
-                    … und {results.length - MAX_RESULTS} weitere – bitte die Suche verfeinern.
+                    … und {formatCount(results.length - MAX_RESULTS)} weitere – bitte die Suche verfeinern.
                   </li>
                 ) : null}
               </ul>
@@ -249,15 +261,21 @@ function PersonPickerDialog({
                           <p className="text-base font-semibold">
                             Nummer <strong>{unknownCode}</strong> nicht gefunden
                           </p>
-                          <p className="mt-1 text-sm">Scanne einen anderen Code oder lege die Person an.</p>
-                          <Button
-                            variant="primary"
-                            className="mt-3"
-                            icon={<UserPlus className="size-5" aria-hidden />}
-                            onClick={() => startCreate(unknownCode, 'scan')}
-                          >
-                            Person {unknownCode} anlegen
-                          </Button>
+                          {allowCreate ? (
+                            <>
+                              <p className="mt-1 text-sm">Scanne einen anderen Code oder lege die Person an.</p>
+                              <Button
+                                variant="primary"
+                                className="mt-3"
+                                icon={<UserPlus className="size-5" aria-hidden />}
+                                onClick={() => startCreate(unknownCode, 'scan')}
+                              >
+                                Person {unknownCode} anlegen
+                              </Button>
+                            </>
+                          ) : (
+                            <p className="mt-1 text-sm">Scanne einen anderen Code.</p>
+                          )}
                         </>
                       ) : (
                         <p className="text-base font-semibold">Dieser QR-Code enthält keine gültige Personennummer.</p>

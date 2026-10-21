@@ -2,11 +2,12 @@
  * A6 – burst of full persons-list loads.
  *
  * The SPA loads all persons with getFullList (3 sequential pages of 1000 for
- * 2000 persons, ≈ 421 KB) on every app start, when the person picker opens
- * on stale data (> 30 s), after every persons change and after every
- * realtime reconnect. When the server restarts or the Wi-Fi drops, all
- * devices reconnect at once and load it together. Measured: 5 and 20
- * simultaneous loads (repeated bursts), time per complete list.
+ * 2000 persons, ≈ 421 KB) on every app start, after every persons change and
+ * after every realtime reconnect (since the F6 fix no longer when a screen
+ * or the picker mounts on data older than 30 s: nothing goes stale by time
+ * while realtime is connected). When the server restarts or the Wi-Fi
+ * drops, all devices reconnect at once and load it together. Measured: 5 and
+ * 20 simultaneous loads (repeated bursts), time per complete list.
  */
 import { latencyStats } from '../../stats.ts';
 import { describeLatency } from '../analysis.ts';

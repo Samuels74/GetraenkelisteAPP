@@ -15,3 +15,20 @@ export function writeStorage(key: string, value: string | null): void {
     // ignore
   }
 }
+
+/** sessionStorage (this tab, until it is closed) – never throws either. */
+export function readSessionStorage(key: string): string | null {
+  try {
+    return window.sessionStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+export function writeSessionStorage(key: string, value: string): void {
+  try {
+    window.sessionStorage.setItem(key, value);
+  } catch {
+    // ignore
+  }
+}

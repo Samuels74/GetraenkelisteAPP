@@ -1,6 +1,7 @@
 import {
   comparePersons,
   findPersonByNumber,
+  foldName,
   isValidPersonNumber,
   normalizeSearch,
   personLabel,
@@ -26,6 +27,20 @@ describe('sorting', () => {
 describe('normalizeSearch', () => {
   it('strips diacritics and case', () => {
     expect(normalizeSearch('  MÜLLER ')).toBe('muller');
+  });
+});
+
+describe('foldName', () => {
+  it('folds diacritics, ß and the ae/oe/ue spellings the same way', () => {
+    expect(foldName('Müller')).toBe('muller');
+    expect(foldName('Mueller')).toBe('muller');
+    expect(foldName('Muller')).toBe('muller');
+    expect(foldName('Weiß')).toBe('weiss');
+    expect(foldName('WEISS')).toBe('weiss');
+    expect(foldName('GROẞ')).toBe('gross');
+    expect(foldName('Öztürk')).toBe(foldName('Oeztuerk'));
+    expect(foldName('Jäger')).toBe(foldName('Jaeger'));
+    expect(foldName('  Straße ')).toBe(foldName('Strasse'));
   });
 });
 
@@ -59,6 +74,64 @@ describe('searchPersons', () => {
 
   it('returns nothing for unknown queries', () => {
     expect(searchPersons(persons, 'xyz')).toEqual([]);
+  });
+
+  describe('German spelling variants (in the query and in the names)', () => {
+    const people = [
+      { id: 'w1', number: '1', name: 'Hans Weiß', nickname: '' },
+      { id: 'w2', number: '2', name: 'Grete Weiss', nickname: '' },
+      { id: 'm1', number: '3', name: 'Anna Müller', nickname: '' },
+      { id: 'm2', number: '4', name: 'Jörg Mueller', nickname: '' },
+      { id: 'm3', number: '5', name: 'Paul Muller', nickname: 'Der Große' },
+      { id: 'n1', number: 'AE-7', name: 'Ohne Umlaut', nickname: '' },
+    ];
+    const ids = (query: string) => searchPersons(people, query).map((p) => p.id);
+
+    it('ß and ss find each other', () => {
+      expect(ids('Weiss')).toEqual(['w1', 'w2']);
+      expect(ids('weiß')).toEqual(['w1', 'w2']);
+      expect(ids('grosse')).toEqual(['m3']);
+    });
+
+    it('ü, ue and u find each other (diacritics folding stays)', () => {
+      expect(ids('Müller')).toEqual(['m1', 'm2', 'm3']);
+      expect(ids('Mueller')).toEqual(['m1', 'm2', 'm3']);
+      expect(ids('muller')).toEqual(['m1', 'm2', 'm3']);
+      expect(ids('mül')).toEqual(['m1', 'm2', 'm3']);
+      expect(ids('Joerg')).toEqual(['m2']);
+      expect(ids('jorg mueller')).toEqual(['m2']);
+    });
+
+    it('numbers are matched as they are, also in multi-word queries', () => {
+      expect(ids('ae-7')).toEqual(['n1']);
+      expect(ids('AE-7 umlaut')).toEqual(['n1']);
+    });
+
+    it('substrings that start inside an ae/oe/ue pair or are cut by folding still match (L1)', () => {
+      const names = [
+        { id: 'b', number: '11', name: 'Michael Bauer', nickname: '' },
+        { id: 'h', number: '12', name: 'Manuel Huber', nickname: 'Joel' },
+        { id: 'f', number: '13', name: 'Feuerstein', nickname: 'Zoe' },
+        { id: 'g', number: '14', name: 'Gerd Müller', nickname: '' },
+      ];
+      const found = (query: string) => searchPersons(names, query).map((p) => p.id);
+      expect(found('erstein')).toEqual(['f']);
+      expect(found('el')).toEqual(['b', 'h']); // Michael; Manuel / Joel
+      expect(found('er')).toEqual(['b', 'h', 'f', 'g']); // Bauer, Huber, Feuerstein, Gerd – by number
+      expect(found('chael')).toEqual(['b']);
+      expect(found('ael')).toEqual(['b']);
+      expect(found('oe')).toEqual(['h', 'f']); // Joel, Zoe – and folded "o" in neither name
+      // the spelling variants still find each other
+      expect(found('Mueller')).toEqual(['g']);
+      expect(found('muller')).toEqual(['g']);
+      expect(found('Mül')).toEqual(['g']);
+    });
+
+    it('a changed person (a new object) is folded anew', () => {
+      const renamed = { ...people[0]!, name: 'Hans Schmid' };
+      expect(searchPersons([renamed], 'weiss')).toEqual([]);
+      expect(searchPersons([renamed], 'schmid')).toEqual([renamed]);
+    });
   });
 });
 

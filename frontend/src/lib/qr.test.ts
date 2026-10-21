@@ -24,6 +24,28 @@ describe('qr helpers', () => {
     expect(qrSvgPath('A7').path).not.toBe(qrSvgPath('A8').path);
   });
 
+  it('computes each code once and shares the frozen result', () => {
+    const first = qrSvgPath('X-cache-1');
+    expect(qrSvgPath('X-cache-1')).toBe(first);
+    expect(Object.isFrozen(first)).toBe(true);
+    expect(qrSvgPath('X-cache-1', 1)).not.toBe(first); // the margin is part of the key
+    expect(qrSvgPath('X-cache-1', 1).size).toBe(first.size - 6);
+  });
+
+  it('keeps the most recently used codes when the cache is full', () => {
+    const kept = qrSvgPath('X-kept');
+    const dropped = qrSvgPath('X-dropped');
+    // 2500 other codes; 'X-kept' is used again halfway, so 'X-dropped' is the oldest entry
+    for (let i = 0; i < 2500; i++) {
+      qrSvgPath(`X-fill-${i}`);
+      if (i === 1250) qrSvgPath('X-kept');
+    }
+    expect(qrSvgPath('X-kept')).toBe(kept);
+    const again = qrSvgPath('X-dropped');
+    expect(again).not.toBe(dropped);
+    expect(again).toEqual(dropped);
+  });
+
   it('builds safe file names', () => {
     expect(qrFileName('001')).toBe('qr-001.png');
     expect(qrFileName('a/b')).toBe('qr-a_b.png');

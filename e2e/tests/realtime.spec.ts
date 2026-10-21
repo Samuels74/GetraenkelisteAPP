@@ -1,4 +1,5 @@
 import { expect, test } from '../support/fixtures';
+import { realtimeSettled } from '../support/realtime';
 import {
   bookTile,
   currentPerson,
@@ -58,5 +59,57 @@ test.describe('realtime', () => {
       expect(await phone.evaluate(() => (window as unknown as { __noReload?: boolean }).__noReload)).toBe(true);
     }
     await expect(currentPerson(benBook)).toHaveAttribute('data-person-number', person.number);
+  });
+
+  test('a long list follows bookings elsewhere without reloading its pages', { tag: '@regression' }, async ({ page, data }) => {
+    const user = await data.user();
+    const colleague = await data.user();
+    const {
+      offerings: [water],
+    } = await data.catalog([{ label: 'Wasser', priceCents: 100 }]);
+    const person = await data.person();
+    await Promise.all(Array.from({ length: 53 }, () => data.booking(person, water!, { by: user })));
+
+    // This page subscribes to booking events only: person / offering / group events of parallel
+    // tests refetch every booking query (prefix invalidation) and would blur the request count.
+    await page.route('**/api/realtime', async (route) => {
+      const request = route.request();
+      if (request.method() !== 'POST') return route.continue();
+      const body = request.postDataJSON() as { subscriptions?: string[] };
+      const subscriptions = (body.subscriptions ?? []).filter((topic) => topic.startsWith('bookings/'));
+      return route.continue({ postData: JSON.stringify({ ...body, subscriptions }) });
+    });
+    const settled = realtimeSettled(page);
+    await signIn(page, user, `/buchungen?person=${person.id}`);
+    const items = page.getByTestId('booking-item');
+    await expect(items).toHaveCount(50);
+    await page.getByRole('button', { name: 'Weitere laden' }).click();
+    await expect(items).toHaveCount(53);
+    // (the first connect's refetch of the list, if it came late, is not what this test counts)
+    await settled();
+
+    // the booking list requests from now on (their filters)
+    const listRequests: string[] = [];
+    page.on('request', (request) => {
+      const url = new URL(request.url());
+      if (request.method() === 'GET' && url.pathname.endsWith('/api/collections/bookings/records')) {
+        listRequests.push(url.searchParams.get('filter') ?? '');
+      }
+    });
+
+    // a booking elsewhere: only the bookings newer than the newest shown one are loaded
+    const extra = await data.booking(person, water!, { by: colleague });
+    await expect(items.first()).toHaveAttribute('data-booking-id', extra.id);
+    await expect(items).toHaveCount(54);
+    await expect(page.getByTestId('bookings-count')).toHaveText('54');
+    expect(listRequests).toHaveLength(1);
+    expect(listRequests[0]).toContain('created >=');
+
+    // cancelled elsewhere: the row disappears without any list request
+    await colleague.api.collection('bookings').delete(extra.id);
+    await expect(items).toHaveCount(53);
+    await expect(page.getByTestId('bookings-count')).toHaveText('53');
+    expect(listRequests).toHaveLength(1);
+    await expect(page.getByRole('button', { name: 'Weitere laden' })).toHaveCount(0);
   });
 });

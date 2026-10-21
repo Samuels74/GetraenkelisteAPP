@@ -1,16 +1,25 @@
 import { Check } from 'lucide-react';
+import { Spinner } from '../../components/ui/Spinner';
+import { cn } from '../../components/ui/cn';
 import { formatCents } from '../../lib/money';
 import type { OfferingRecord } from '../../lib/types';
 import type { OfferingSection } from './offerings';
-import { cn } from '../../components/ui/cn';
 
 interface OfferingTileProps {
   offering: OfferingRecord;
   flashKey: number | null;
+  /**
+   * A booking of this tile is on its way: a spinner shows the tap arrived (on
+   * a slow network nothing happened for a moment). The tile stays tappable –
+   * booking the same drink twice in a row is normal at a bar.
+   */
+  pending?: boolean;
+  /** No booking possible right now (offline, the selected person is still loading). */
+  disabled?: boolean;
   onBook: (offering: OfferingRecord) => void;
 }
 
-export function OfferingTile({ offering, flashKey, onBook }: OfferingTileProps) {
+export function OfferingTile({ offering, flashKey, pending = false, disabled = false, onBook }: OfferingTileProps) {
   const price = formatCents(offering.priceCents);
   return (
     <button
@@ -19,11 +28,14 @@ export function OfferingTile({ offering, flashKey, onBook }: OfferingTileProps) 
       data-offering-id={offering.id}
       data-offering-name={offering.name}
       aria-label={`${offering.name}, ${price}`}
+      aria-busy={pending || undefined}
+      disabled={disabled}
       onClick={() => onBook(offering)}
       className={cn(
         'relative flex min-h-26 flex-col justify-between gap-2 rounded-3xl border border-line bg-surface p-4 text-left shadow-sm',
-        'transition-[transform,background-color,border-color] duration-100 select-none',
-        'hover:border-primary/50 active:scale-[0.97] active:border-primary active:bg-primary-soft',
+        'transition-[transform,background-color,border-color,opacity] duration-100 select-none',
+        'enabled:hover:border-primary/50 enabled:active:scale-[0.97] enabled:active:border-primary enabled:active:bg-primary-soft',
+        'disabled:cursor-not-allowed disabled:opacity-50 disabled:shadow-none',
       )}
     >
       <span className="text-[17px] leading-snug font-semibold break-words hyphens-auto min-[380px]:text-lg">
@@ -45,6 +57,10 @@ export function OfferingTile({ offering, flashKey, onBook }: OfferingTileProps) 
         >
           <Check className="size-5" strokeWidth={3} />
         </span>
+      ) : pending ? (
+        <span aria-hidden className="absolute top-2.5 right-2.5 flex size-8 items-center justify-center text-primary">
+          <Spinner className="size-5" />
+        </span>
       ) : null}
     </button>
   );
@@ -53,10 +69,13 @@ export function OfferingTile({ offering, flashKey, onBook }: OfferingTileProps) 
 interface OfferingGridProps {
   sections: OfferingSection[];
   flash: { offeringId: string; key: number } | null;
+  /** Offerings with a booking on its way (id → number of requests). */
+  pending?: ReadonlyMap<string, number>;
+  disabled?: boolean;
   onBook: (offering: OfferingRecord) => void;
 }
 
-export function OfferingGrid({ sections, flash, onBook }: OfferingGridProps) {
+export function OfferingGrid({ sections, flash, pending, disabled = false, onBook }: OfferingGridProps) {
   const showHeadings = sections.length > 1;
   return (
     <div className="space-y-6">
@@ -80,6 +99,8 @@ export function OfferingGrid({ sections, flash, onBook }: OfferingGridProps) {
                 key={offering.id}
                 offering={offering}
                 flashKey={flash?.offeringId === offering.id ? flash.key : null}
+                pending={(pending?.get(offering.id) ?? 0) > 0}
+                disabled={disabled}
                 onBook={onBook}
               />
             ))}

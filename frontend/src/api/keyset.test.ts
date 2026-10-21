@@ -1,4 +1,4 @@
-import { fetchAllKeyset, keysetFilter } from './keyset';
+import { compareNewestFirst, fetchAllKeyset, keysetFilter, keysetNewerFilter } from './keyset';
 
 interface Row {
   id: string;
@@ -40,12 +40,51 @@ function rowsFor(count: number): Row[] {
 }
 
 describe('keysetFilter', () => {
-  it('builds the "older than cursor" condition on (created, id)', () => {
+  it('builds the "older than cursor" condition on (created, id) with an index-friendly range in front', () => {
     expect(keysetFilter('', null)).toBe('');
     expect(keysetFilter("person = 'p1'", null)).toBe("(person = 'p1')");
+    // `created <= c` selects the same rows; it lets SQLite use the created index (F3)
     expect(keysetFilter("person = 'p1'", { created: '2026-09-28 18:00:00.123Z', id: 'abc' })).toBe(
-      "(person = 'p1') && (created < '2026-09-28 18:00:00.123Z' || (created = '2026-09-28 18:00:00.123Z' && id < 'abc'))",
+      "(person = 'p1') && created <= '2026-09-28 18:00:00.123Z' && " +
+        "(created < '2026-09-28 18:00:00.123Z' || (created = '2026-09-28 18:00:00.123Z' && id < 'abc'))",
     );
+    expect(keysetFilter('', { created: '2026-09-28 18:00:00.123Z', id: 'abc' })).toBe(
+      "created <= '2026-09-28 18:00:00.123Z' && " +
+        "(created < '2026-09-28 18:00:00.123Z' || (created = '2026-09-28 18:00:00.123Z' && id < 'abc'))",
+    );
+  });
+
+  it('quotes cursor values', () => {
+    expect(keysetFilter('', { created: "2026-09-28 18:00:00.123Z", id: "a'b" })).toContain("id < 'a\\'b'");
+  });
+});
+
+describe('keysetNewerFilter', () => {
+  const cursor = { created: '2026-09-28 18:00:00.123Z', id: 'abc' };
+  it('builds the "newer than cursor" condition with a range in front', () => {
+    expect(keysetNewerFilter("person = 'p1'", cursor)).toBe(
+      "(person = 'p1') && created >= '2026-09-28 18:00:00.123Z' && " +
+        "(created > '2026-09-28 18:00:00.123Z' || (created = '2026-09-28 18:00:00.123Z' && id > 'abc'))",
+    );
+  });
+  it('includes the cursor row itself when inclusive', () => {
+    expect(keysetNewerFilter('', cursor, true)).toBe(
+      "created >= '2026-09-28 18:00:00.123Z' && " +
+        "(created > '2026-09-28 18:00:00.123Z' || (created = '2026-09-28 18:00:00.123Z' && id >= 'abc'))",
+    );
+  });
+});
+
+describe('compareNewestFirst', () => {
+  it('orders like -created,-id', () => {
+    const rows = [
+      { created: '2026-09-28 18:00:00.100Z', id: 'b' },
+      { created: '2026-09-28 18:00:00.200Z', id: 'a' },
+      { created: '2026-09-28 18:00:00.100Z', id: 'c' },
+      { created: '2026-09-27 23:59:59.999Z', id: 'z' },
+    ];
+    expect([...rows].sort(compareNewestFirst).map((r) => r.id)).toEqual(['a', 'c', 'b', 'z']);
+    expect(compareNewestFirst(rows[0]!, { ...rows[0]! })).toBe(0);
   });
 });
 

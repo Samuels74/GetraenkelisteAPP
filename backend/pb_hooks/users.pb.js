@@ -5,12 +5,20 @@
 // Model-level hooks (run for every save/delete: REST API, dashboard,
 // migrations, other hooks) handle normalization and data integrity.
 // Request-level hooks handle everything that depends on who is asking.
+//
+// At least one enabled admin always remains for everything done through the
+// REST API – the app and the dashboard –, also when two admins act at the
+// same moment: the "last active admin" check and the re-check of the acting
+// admin run at request level inside the write transaction (lib/rules.js
+// runInWriteTransaction). Migrations and other hooks are trusted code and not
+// bound by it: the seed migration's down step deletes the seeded admin.
 
 // ------------------------------------------------------------ model level
 
 onRecordCreate((e) => {
   const rules = require(`${__hooks}/lib/rules.js`);
   rules.normalizeUsername(e.record);
+  rules.normalizeNames(e.record, ["name"], rules.normalizeText); // display name: set or changed
   if (!e.record.getString("role")) {
     e.record.set("role", "user");
   }
@@ -20,6 +28,7 @@ onRecordCreate((e) => {
 onRecordUpdate((e) => {
   const rules = require(`${__hooks}/lib/rules.js`);
   rules.normalizeUsername(e.record);
+  rules.normalizeNames(e.record, ["name"], rules.normalizeText); // display name: set or changed
 
   // Disabling an account logs it out everywhere: all issued tokens are signed
   // with the old tokenKey and become invalid (PocketBase then also stops
@@ -32,13 +41,15 @@ onRecordUpdate((e) => {
 
 onRecordDelete((e) => {
   const rules = require(`${__hooks}/lib/rules.js`);
-  rules.assertDeletable(e.app, e.record); // users that created bookings
-  e.next();
+  // users that created bookings – counted inside the delete's transaction
+  rules.runInWriteTransaction(e, (txApp) => rules.assertDeletable(txApp, e.record));
 }, "users");
 
 // The email field is a system field that is not used by the app. PocketBase
-// does not allow hiding it via the field options, so it is stripped from every
-// API response (records, auth responses, realtime events) here.
+// does not allow hiding it via the field options, so it is stripped from
+// every API response to app users (records, auth responses, realtime events)
+// here. Superusers (dashboard) still see it: PocketBase unhides all fields
+// for them after the enrich hooks.
 onRecordEnrich((e) => {
   e.record.hide("email");
   e.next();
@@ -69,10 +80,12 @@ onRecordUpdateRequest((e) => {
 
   const body = e.requestInfo().body;
 
-  // changing the own password always requires the current one (admins too);
-  // admins/superusers resetting SOMEONE ELSE's password don't need it
   if (isSelf) {
+    // changing the own password always requires the current one (admins too);
+    // admins/superusers resetting SOMEONE ELSE's password don't need it
     rules.assertOldPasswordForOwnChange(e.app, record.id, body);
+    // the own mustChangePassword flag ends only with a new, different password
+    rules.assertRealOwnPasswordChange(record, body);
   }
 
   const password = body["password"];
@@ -81,5 +94,24 @@ onRecordUpdateRequest((e) => {
     record.set("mustChangePassword", !isSelf);
   }
 
-  e.next();
+  // checked and written in one transaction (the password checks above stay
+  // outside: bcrypt must not hold the write connection)
+  rules.runInWriteTransaction(e, (txApp) => {
+    if (rules.isAppUser(e.auth) && !isSelf) {
+      // an admin changing another user: still an admin when it is written
+      rules.assertActorStillAdmin(txApp, e.auth.id);
+    }
+    rules.assertActiveAdminRemains(txApp, record, false);
+  });
+}, "users");
+
+onRecordDeleteRequest((e) => {
+  const rules = require(`${__hooks}/lib/rules.js`);
+  rules.runInWriteTransaction(e, (txApp) => {
+    // app users can only delete others (rule): still an admin when it is written
+    if (rules.isAppUser(e.auth)) {
+      rules.assertActorStillAdmin(txApp, e.auth.id);
+    }
+    rules.assertActiveAdminRemains(txApp, e.record, true);
+  });
 }, "users");

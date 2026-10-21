@@ -1,5 +1,5 @@
 import { X } from 'lucide-react';
-import { useId, useLayoutEffect, useRef, type ReactNode } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { Button, IconButton } from './Button';
 import type { ButtonVariant } from './buttonStyles';
@@ -29,7 +29,7 @@ export interface DialogProps {
   testId?: string;
   /** Extra buttons in the header (left of the close button). */
   headerActions?: ReactNode;
-  /** Close on Escape / backdrop click (default true). */
+  /** The user can close it: Escape / back gesture, backdrop click, "Schließen" (default true). */
   dismissible?: boolean;
   bodyClassName?: string;
 }
@@ -82,6 +82,11 @@ function DialogImpl({
       aria-modal="true"
       data-testid={testId}
       onCancel={(event) => {
+        // React passes the (non-bubbling) cancel event of a dialog opened from
+        // this one – e.g. a confirmation in an edit dialog, a portal in our
+        // React tree – up to this handler too: Escape or Android's back gesture
+        // would close both and lose the edits. Only our own dialog counts.
+        if (event.target !== event.currentTarget) return;
         event.preventDefault();
         if (dismissible) onClose();
       }}
@@ -101,7 +106,7 @@ function DialogImpl({
             {title}
           </h2>
           {headerActions}
-          <IconButton label="Schließen" onClick={onClose} data-testid="dialog-close">
+          <IconButton label="Schließen" onClick={onClose} disabled={!dismissible} data-testid="dialog-close">
             <X className="size-6" aria-hidden />
           </IconButton>
         </header>
@@ -132,13 +137,37 @@ interface ConfirmDialogProps {
   confirmVariant?: ButtonVariant;
   loading?: boolean;
   error?: string | null;
-  onConfirm: () => void;
+  /**
+   * Return the action's promise: until it settles the confirm button shows a
+   * spinner and further taps are ignored.
+   */
+  onConfirm: () => void | Promise<unknown>;
   onClose: () => void;
   testId?: string;
 }
 
-export function ConfirmDialog({
-  open,
+/**
+ * While a confirmed action is running, its dialog cannot be closed – a sent
+ * request cannot be recalled, so "Abbrechen" would only hide the outcome (a
+ * booking cancelled after the bartender pressed "Abbrechen"). Only if the
+ * answer takes unusually long (a stalled connection) can it be closed again
+ * after this time; the caller still reports the outcome then.
+ */
+export const CONFIRM_LOCKED_MAX_MS = 15_000;
+
+/**
+ * Confirmation for an action. Destructive actions (the default) focus
+ * "Abbrechen" first, so Enter/Space right after opening does not confirm.
+ * While the action runs (`onConfirm` returned a promise), the confirm button
+ * shows a spinner and the dialog stays open until the outcome (see
+ * CONFIRM_LOCKED_MAX_MS).
+ */
+export function ConfirmDialog(props: ConfirmDialogProps) {
+  if (!props.open) return null;
+  return <ConfirmDialogImpl {...props} />;
+}
+
+function ConfirmDialogImpl({
   title,
   message,
   confirmLabel,
@@ -149,18 +178,52 @@ export function ConfirmDialog({
   onClose,
   testId = 'confirm-dialog',
 }: ConfirmDialogProps) {
+  // Set synchronously: a double click whose clicks arrive before React
+  // re-renders the busy button would otherwise run the action twice.
+  const busy = useRef(false);
+  const [pending, setPending] = useState(false);
+  // the action has been running for CONFIRM_LOCKED_MAX_MS: closing is possible again
+  const [slow, setSlow] = useState(false);
+  const slowTimer = useRef<number | undefined>(undefined);
+  useEffect(() => () => window.clearTimeout(slowTimer.current), []);
+  const destructive = confirmVariant === 'danger' || confirmVariant === 'danger-soft';
+  const locked = (Boolean(loading) || pending) && !slow;
+
+  function confirm() {
+    if (busy.current) return;
+    const result = onConfirm();
+    if (!(result instanceof Promise)) return;
+    busy.current = true;
+    setPending(true);
+    slowTimer.current = window.setTimeout(() => setSlow(true), CONFIRM_LOCKED_MAX_MS);
+    const done = () => {
+      window.clearTimeout(slowTimer.current);
+      busy.current = false;
+      setPending(false);
+      setSlow(false);
+    };
+    void result.then(done, done);
+  }
+
   return (
     <Dialog
-      open={open}
+      open
       onClose={onClose}
       title={title}
       testId={testId}
+      dismissible={!locked}
       footer={
         <div className="flex gap-3">
-          <Button block onClick={onClose}>
+          <Button block onClick={onClose} disabled={locked} data-autofocus={destructive ? '' : undefined}>
             Abbrechen
           </Button>
-          <Button block variant={confirmVariant} loading={loading} onClick={onConfirm} data-autofocus="">
+          <Button
+            block
+            variant={confirmVariant}
+            loading={loading || pending}
+            onClick={confirm}
+            data-autofocus={destructive ? undefined : ''}
+          >
             {confirmLabel}
           </Button>
         </div>

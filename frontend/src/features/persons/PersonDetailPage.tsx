@@ -1,10 +1,11 @@
 import { ArrowLeft, Beer, ChevronRight, Download, Pencil, Printer, Trash, UserX } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router';
 import { toast } from 'sonner';
 import { useDeletePerson } from '../../api/mutations';
-import { usePersons, useRecentBookings, useTotals } from '../../api/queries';
+import { personTotalsQuery, usePersons, useRecentBookings, useTotals } from '../../api/queries';
 import { useCurrentUser } from '../../auth/session';
+import { ConnectionHint } from '../../components/ConnectionHint';
 import { QrCode } from '../../components/QrCode';
 import { Button, ButtonLink, IconButton } from '../../components/ui/Button';
 import { ConfirmDialog, Dialog } from '../../components/ui/Dialog';
@@ -13,10 +14,11 @@ import { PageHeader } from '../../components/ui/PageHeader';
 import { PageSpinner } from '../../components/ui/Spinner';
 import { downloadBlob } from '../../lib/download';
 import { errorMessage } from '../../lib/errors';
-import { formatCents } from '../../lib/money';
+import { formatCents, formatCount } from '../../lib/money';
 import { canCancelBooking, canDeletePersons } from '../../lib/permissions';
 import { qrCardPngBlob, qrFileName } from '../../lib/qr';
 import { useDocumentTitle } from '../../lib/useDocumentTitle';
+import { useToday } from '../../lib/useToday';
 import type { BookingRecord, PersonRecord } from '../../lib/types';
 import { setSelectedPersonId } from '../book/selectedPerson';
 import { BookingItem } from '../bookings/BookingItem';
@@ -28,19 +30,28 @@ export function PersonDetailPage() {
   const persons = usePersons();
   const person = persons.data?.find((p) => p.id === personId);
 
-  if (persons.isPending) return <PageSpinner />;
-  if (persons.isError) return <QueryError error={persons.error} onRetry={() => void persons.refetch()} className="mt-6" />;
-  if (!person) {
-    return (
-      <EmptyState icon={<UserX className="size-7" aria-hidden />} title="Person nicht gefunden" className="pt-16">
-        <p>Vielleicht wurde sie gelöscht.</p>
-        <ButtonLink to="/personen" className="mt-4">
-          Zu den Personen
-        </ButtonLink>
-      </EmptyState>
+  // (a failed background refresh keeps the loaded persons)
+  if (!persons.data) {
+    return persons.isError ? (
+      <QueryError error={persons.error} onRetry={() => void persons.refetch()} className="mt-6" />
+    ) : (
+      <PageSpinner />
     );
   }
+  if (!person) return <PersonNotFound />;
   return <PersonDetail key={person.id} person={person} />;
+}
+
+function PersonNotFound() {
+  useDocumentTitle('Person nicht gefunden');
+  return (
+    <EmptyState icon={<UserX className="size-7" aria-hidden />} title="Person nicht gefunden" titleAs="h1" className="pt-16">
+      <p>Vielleicht wurde sie gelöscht.</p>
+      <ButtonLink to="/personen" className="mt-4">
+        Zu den Personen
+      </ButtonLink>
+    </EmptyState>
+  );
 }
 
 function PersonDetail({ person }: { person: PersonRecord }) {
@@ -48,8 +59,18 @@ function PersonDetail({ person }: { person: PersonRecord }) {
   const user = useCurrentUser();
   const navigate = useNavigate();
   const location = useLocation();
-  const justCreated = (location.state as { created?: boolean } | null)?.created === true;
-  const totals = useTotals({ period: 'all', personId: person.id });
+  // "Person angelegt" right after creating – once: the history entry forgets
+  // it at once, so a reload (or Back to this entry) does not show it again.
+  const [justCreated] = useState(() => (location.state as { created?: boolean } | null)?.created === true);
+  const createdState = (location.state as { created?: boolean } | null)?.created === true;
+  useEffect(() => {
+    if (!createdState) return;
+    void navigate(
+      { pathname: location.pathname, search: location.search, hash: location.hash },
+      { replace: true, state: null },
+    );
+  }, [createdState, navigate, location.pathname, location.search, location.hash]);
+  const totals = useTotals(personTotalsQuery(person.id), true, { parts: ['summary'] });
   const recent = useRecentBookings(person.id, 20);
   const deletePerson = useDeletePerson();
   const [editing, setEditing] = useState(false);
@@ -57,9 +78,12 @@ function PersonDetail({ person }: { person: PersonRecord }) {
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [cancelTarget, setCancelTarget] = useState<BookingRecord | null>(null);
   const [downloading, setDownloading] = useState(false);
-  const [now] = useState(() => new Date());
+  // "Heute" / time-only rows move on at midnight
+  const now = useToday();
 
-  const hasBookings = (totals.data?.count ?? 0) > 0;
+  const count = totals.data?.count;
+  const totalCents = totals.data?.totalCents;
+  const hasBookings = (count ?? 0) > 0;
   const subtitle = [person.name, person.nickname ? `„${person.nickname}“` : ''].filter(Boolean).join(' ');
 
   async function downloadPng() {
@@ -113,12 +137,16 @@ function PersonDetail({ person }: { person: PersonRecord }) {
         </p>
       ) : null}
 
+      <ConnectionHint />
+
       <div className="grid gap-4 md:grid-cols-2">
         <Card className="flex flex-col items-center gap-4 p-4">
-          <div className="rounded-2xl bg-white p-3 ring-1 ring-black/10">
-            <QrCode value={person.number} margin={1} className="size-52 sm:size-60" />
+          {/* never wider than the card (narrow phones with large text) */}
+          <div className="w-full max-w-60 rounded-2xl bg-white p-3 ring-1 ring-black/10 sm:max-w-66">
+            <QrCode value={person.number} margin={1} className="aspect-square w-full" />
           </div>
-          <div className="grid w-full grid-cols-2 gap-2">
+          {/* side by side, stacked when they do not fit (narrow phones with large text) */}
+          <div className="grid w-full grid-cols-[repeat(auto-fit,minmax(min(100%,7.5rem),1fr))] gap-2">
             <Button
               icon={<Download className="size-5" aria-hidden />}
               loading={downloading}
@@ -152,11 +180,11 @@ function PersonDetail({ person }: { person: PersonRecord }) {
           <Card className="p-4">
             <p className="text-sm font-medium text-muted">Gesamt (alle Buchungen)</p>
             <p className="text-3xl font-bold tabular-nums" data-testid="person-total">
-              {totals.data ? formatCents(totals.data.totalCents) : '…'}
+              {totalCents !== undefined ? formatCents(totalCents) : '…'}
             </p>
-            {totals.data ? (
+            {count !== undefined ? (
               <p className="text-sm text-muted">
-                {totals.data.count} {totals.data.count === 1 ? 'Buchung' : 'Buchungen'}
+                {formatCount(count)} {count === 1 ? 'Buchung' : 'Buchungen'}
               </p>
             ) : null}
           </Card>
@@ -175,7 +203,8 @@ function PersonDetail({ person }: { person: PersonRecord }) {
             Alle anzeigen <ChevronRight className="size-4" aria-hidden />
           </Link>
         </div>
-        {recent.isError ? (
+        {/* (a failed refresh of an empty list: "Noch keine Buchungen." may be wrong) */}
+        {recent.isError && !recent.data?.length ? (
           <QueryError error={recent.error} onRetry={() => void recent.refetch()} />
         ) : recent.data && recent.data.length > 0 ? (
           <ul className="divide-y divide-line overflow-hidden rounded-3xl border border-line bg-surface">
@@ -210,7 +239,7 @@ function PersonDetail({ person }: { person: PersonRecord }) {
             variant="danger-soft"
             className="mt-3"
             icon={<Trash className="size-5" aria-hidden />}
-            disabled={hasBookings || !totals.data}
+            disabled={hasBookings || count === undefined}
             onClick={() => setConfirmDelete(true)}
           >
             Löschen
@@ -238,9 +267,8 @@ function PersonDetail({ person }: { person: PersonRecord }) {
           </p>
         }
         confirmLabel="Löschen"
-        loading={deletePerson.isPending}
         error={deleteError}
-        onConfirm={() => void handleDelete()}
+        onConfirm={handleDelete}
         onClose={() => {
           setConfirmDelete(false);
           setDeleteError(null);

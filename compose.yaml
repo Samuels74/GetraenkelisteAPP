@@ -3,6 +3,7 @@
 #   cp .env.example .env          # adjust port / bind address / optional superuser
 #   docker compose up -d --build  # build the image (runs the frontend checks) and start
 #   docker compose logs -f
+#   git pull && docker compose build --pull && docker compose up -d   # update (--pull: newer base images)
 #
 # One container: PocketBase serving the API and the web app on plain HTTP port
 # 8090. TLS is terminated by your reverse proxy – see deploy/reverse-proxy.md

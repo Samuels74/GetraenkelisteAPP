@@ -84,14 +84,43 @@ test.describe('persons (Personen)', () => {
       '„Bibi“',
     );
     // (other tests create persons in parallel, so the exact number is not known here)
-    await expect(page.getByText(/^\d+ Personen$/)).toBeVisible();
+    await expect(page.getByText(/^[\d.]+ Personen$/)).toBeVisible();
+    // opened from the persons list: "Zurück" returns there
+    await page.getByRole('button', { name: 'Zurück' }).click();
+    await expect(page).toHaveURL(/\/personen$/);
 
-    // a selection of persons only
+    // a selection of persons only, opened directly: "Zurück" goes to the persons – never to
+    // whatever the tab showed before the app (here: another page load, /konto)
+    await page.goto('/konto');
     await page.goto(`/personen/qr-codes?ids=${first.id},${second.id}`);
     await expect(sheet.getByTestId('qr-card')).toHaveCount(2);
     await expect(page.getByText('2 Personen', { exact: true })).toBeVisible();
     await page.getByRole('button', { name: 'Zurück' }).click();
-    await expect(page).toHaveURL(/\/personen\/qr-codes$/);
+    await expect(page).toHaveURL(/\/personen$/);
+  });
+
+  test('long lists show 100 persons and more on demand', async ({ page, data }) => {
+    const user = await data.user();
+    // 101 persons; their numbers and names carry this test's token (other tests' persons do not)
+    await Promise.all(Array.from({ length: 101 }, () => data.person()));
+
+    await signIn(page, user, `/personen?q=${data.token}`);
+    await expect(page.getByTestId('persons-search')).toHaveValue(data.token);
+    const rows = page.getByTestId('person-row');
+    await expect(rows).toHaveCount(100);
+    const more = page.getByTestId('persons-more');
+    await expect(more).toContainText('100 von 101 Personen angezeigt');
+    await more.getByRole('button', { name: '1 weitere anzeigen' }).click();
+    await expect(rows).toHaveCount(101);
+    await expect(more).toHaveCount(0);
+    // the button is gone: focus continues at the new row
+    await expect(rows.nth(100)).toBeFocused();
+
+    // the URL follows the field (after a short pause), a narrower search shows fewer rows
+    await page.getByTestId('persons-search').fill(`${data.token}1`);
+    await expect(page).toHaveURL(new RegExp(`[?&]q=${data.token}1$`));
+    await expect.poll(() => rows.count()).toBeLessThan(100);
+    await expect(rows.first()).toBeVisible();
   });
 
   test('admins can delete persons without bookings only', async ({ page, data }) => {
@@ -118,6 +147,9 @@ test.describe('persons (Personen)', () => {
     await confirm.getByRole('button', { name: 'Löschen' }).click();
     await expect(page).toHaveURL(/\/personen$/);
     await expect(page.getByText(`Person ${unbooked.number} gelöscht`)).toBeVisible();
+    // (the list shows the first 100 persons – search, as with many persons)
+    await page.getByTestId('persons-search').fill(unbooked.number);
+    await expect(page.getByText('Keine Person gefunden')).toBeVisible();
     await expect(page.locator(`[data-testid="person-row"][data-person-number="${attr(unbooked.number)}"]`)).toHaveCount(0);
     expect(await data.findPerson(unbooked.number)).toBeNull();
   });

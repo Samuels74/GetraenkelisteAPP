@@ -4,10 +4,12 @@
  * for PB_CONNECT (its id is the clientId), then POST /api/realtime with the
  * subscriptions – what the SDK's RealtimeService does for the SPA.
  *
- * Real connections matter for the measurements: every open stream pins one of
- * PocketBase's JS VMs for its whole lifetime (backend/pb_hooks/static.pb.js
- * routerUse – see the 1B inventory §4.1), and every booking is broadcast to
- * every subscriber (an access check + a JSON encoding per client).
+ * Real connections matter for the measurements: every open stream is a
+ * long-lived request with its own server-side client state (≈ 0.07 MiB of
+ * PocketBase memory each since static.pb.js serves the SPA through a route
+ * of its own – before, a global JS middleware pinned one JS VM per stream,
+ * ≈ 0.5 MiB), and every booking is broadcast to every subscriber (an access
+ * check + a JSON encoding per client).
  *
  * Like the SDK, the client reconnects when the server ends the stream – after
  * 5 minutes without a message (idle timeout) or 30 minutes in total
@@ -61,6 +63,7 @@ export class SseClient {
   private readonly options: SseOptions;
   private request: http.ClientRequest | undefined;
   private closed = false;
+  private connected = false;
   private reconnectTimer: NodeJS.Timeout | undefined;
 
   constructor(options: SseOptions) {
@@ -74,6 +77,11 @@ export class SseClient {
 
   get isClosed(): boolean {
     return this.closed;
+  }
+
+  /** Subscribed and the stream still open (pb.realtime.isConnected). */
+  get isConnected(): boolean {
+    return this.connected;
   }
 
   private connect(reconnect: boolean): Promise<void> {
@@ -100,6 +108,7 @@ export class SseClient {
           return;
         }
         subscribed = true;
+        this.connected = !this.closed;
         clearTimeout(timeout);
         this.stats.connects++;
         if (reconnect) this.stats.reconnects++;
@@ -172,6 +181,7 @@ export class SseClient {
 
   /** The stream ended (server close, network error). */
   private ended(wasSubscribed: boolean): void {
+    if (wasSubscribed) this.connected = false;
     if (this.closed || !wasSubscribed) return;
     this.stats.serverCloses++;
     this.options.onDisconnect?.();
@@ -188,17 +198,35 @@ export class SseClient {
 
   close(): void {
     this.closed = true;
+    this.connected = false;
     clearTimeout(this.reconnectTimer);
     this.request?.destroy();
   }
 }
 
-/** Parses a record event's data: `{"action":"create","record":{…}}`. */
-export function parseRecordEvent(data: string): { action: string; id: string } | null {
+/** The fields of a booking record the SPA's booking sync reads (undefined when missing or not a string). */
+export interface EventRecord {
+  id: string;
+  person?: string;
+  createdBy?: string;
+  created?: string;
+}
+
+/**
+ * Parses a record event's data: `{"action":"create","record":{…}}`; null
+ * when the data is no record event at all.
+ */
+export function parseRecordEvent(data: string): { action: string; id: string; record: EventRecord } | null {
   try {
-    const parsed = JSON.parse(data) as { action?: unknown; record?: { id?: unknown } };
-    if (typeof parsed.action !== 'string' || typeof parsed.record?.id !== 'string') return null;
-    return { action: parsed.action, id: parsed.record.id };
+    const parsed = JSON.parse(data) as { action?: unknown; record?: Record<string, unknown> };
+    const raw = parsed.record;
+    if (typeof parsed.action !== 'string' || typeof raw?.id !== 'string') return null;
+    const field = (name: string) => (typeof raw[name] === 'string' ? raw[name] : undefined);
+    return {
+      action: parsed.action,
+      id: raw.id,
+      record: { id: raw.id, person: field('person'), createdBy: field('createdBy'), created: field('created') },
+    };
   } catch {
     return null;
   }

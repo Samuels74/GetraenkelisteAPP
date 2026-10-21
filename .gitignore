@@ -11,6 +11,7 @@ test-results/
 playwright-report/
 blob-report/
 coverage/
+.vitest/
 
 # editor / OS
 .DS_Store

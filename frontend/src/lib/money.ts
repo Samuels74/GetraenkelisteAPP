@@ -12,6 +12,22 @@ export function formatCents(cents: number): string {
   return currencyFormat.format(cents / 100);
 }
 
+const countFormat = new Intl.NumberFormat('de-AT', { maximumFractionDigits: 0 });
+/** The thousands separator of the amounts (`€ 41.135,50`). */
+const amountGroupSeparator = currencyFormat.formatToParts(1_000_000).find((part) => part.type === 'group')?.value ?? '.';
+
+/**
+ * Formats a count (bookings, persons, quantities) with the thousands
+ * separator of the amounts next to it: `14927` → `14.927`, like
+ * `€ 41.135,50` – de-AT itself groups plain numbers with a space.
+ */
+export function formatCount(count: number): string {
+  return countFormat
+    .formatToParts(count)
+    .map((part) => (part.type === 'group' ? amountGroupSeparator : part.value))
+    .join('');
+}
+
 /**
  * Formats cents as a plain decimal-comma number without currency symbol and
  * without thousands separators, e.g. `-50` → `-0,50`, `123456` → `1234,56`.

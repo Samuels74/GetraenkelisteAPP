@@ -4,18 +4,21 @@
  * A2: 5 phones on Buchen (user1 … user5, each with a person selected) and
  * one laptop on Buchungen "Alle" (1 page loaded). Bookings arrive open-loop
  * at 2 per second in total (exactly 2/s per window, Poisson spacing),
- * round-robin over the phones, offerings
- * weighted like the dataset; about 10 % are undone ("Rückgängig") 1–3 s
- * later. Every device runs the SPA's realtime refetch logic (device.ts).
+ * round-robin over the phones – each phone books its own selected person –,
+ * offerings weighted like the dataset; about 10 % are undone ("Rückgängig")
+ * 1–3 s later. Every device runs the SPA's realtime logic (device.ts): a
+ * tap costs the booking phone POST + its person's summary, the other phones
+ * nothing (another person), the laptop its summary + one head request.
  *
- * A2b: A2 plus 2 phones on Personen (each booking → refetch of the complete
- * totals, ≈ 250 KB) and the laptop with 10 pages loaded ("Weitere laden" ×9
- * – each booking → all 10 pages again). Shows what the big screens cost in
- * bandwidth (1B finding #1).
+ * A2b: A2 plus 2 phones on Personen (each booking → the booked person's row,
+ * ≈ 0.4 KB) and the laptop with 10 pages loaded ("Weitere laden" ×9 – still
+ * one head request per booking). Before the fixes every booking made these
+ * screens reload the complete totals (≈ 250 KB) and all 10 list pages –
+ * 757 KiB per booking on the laptop (docs/LOADTEST-FINDINGS.md F2).
  *
  * Measured: create/delete latency from the scheduled time, propagation to the
- * other devices, requests and bytes per type and device, errors, PocketBase
- * CPU/RSS, the load generator's health.
+ * devices whose screen shows the booking, requests and bytes per type and
+ * device, errors, PocketBase CPU/RSS, the load generator's health.
  */
 import { deriveRandom } from '../../random.ts';
 import { analyzeFleet, describeLatency, typeTable, type FleetAnalysis } from '../analysis.ts';
@@ -142,11 +145,13 @@ export function reportRush(rec: ScenarioRecorder, a: FleetAnalysis, options: { b
     .join(', ');
   rec.add({
     key: 'propagation.p95',
-    label: 'booking → refetched on the other devices – p95',
+    label: 'booking → shown on the other devices – p95',
     value: a.propagation.all.count ? a.propagation.all.p95 : null,
     unit: 'ms',
     budget: PROPAGATION,
-    detail: `${describeLatency(a.propagation.all)}; ${screens}; missing deliveries ${a.propagation.missing}`,
+    detail:
+      `${describeLatency(a.propagation.all)}; ${screens || 'no screen showed the bookings'}; missing deliveries ${a.propagation.missing}; ` +
+      `${a.propagation.unaffected.toLocaleString('en')} device/booking pairs needed no update (another person's Buchen phone)`,
     explain: (verdict) =>
       verdict === 'warn' || verdict === 'fail'
         ? `another device shows a new booking only after ${a.propagation.all.p95} ms (p95) – staff see different totals for a while`
@@ -174,8 +179,8 @@ export function reportRush(rec: ScenarioRecorder, a: FleetAnalysis, options: { b
       detail: `response bodies + realtime stream; ${laptop.devices} laptop(s), mean ${laptop.meanKiBps} KiB/s = ${fmt(laptop.maxKiBps / a.bookingsPerSecond, 0)} KiB per booking`,
       explain: (verdict) =>
         verdict === 'warn'
-          ? `after every booking the laptop reloads the complete totals (≈ 250 KB, all 2000 persons) and every loaded list page (≈ 64 KB each) – ` +
-            `${fmt(laptop.maxKiBps / 1024, 2)} MiB/s ≈ ${fmt((laptop.maxKiBps * 8) / 1024, 1)} Mbit/s at ${fmt(a.bookingsPerSecond)} bookings/s`
+          ? `the laptop downloads ${fmt(laptop.maxKiBps / 1024, 2)} MiB/s ≈ ${fmt((laptop.maxKiBps * 8) / 1024, 1)} Mbit/s at ${fmt(a.bookingsPerSecond)} ` +
+            'bookings/s – a booking should cost it its summary and one head request (≈ 2 KB); check the request table for full refetches'
           : undefined,
     });
   }
@@ -190,8 +195,8 @@ export function reportRush(rec: ScenarioRecorder, a: FleetAnalysis, options: { b
       detail: `response bodies + realtime stream; ${personen.devices} phone(s), mean ${personen.meanKiBps} KiB/s = ${fmt(personen.maxKiBps / a.bookingsPerSecond, 0)} KiB per booking`,
       explain: (verdict) =>
         verdict === 'warn'
-          ? `a phone that just shows the Personen list downloads the complete totals (≈ 250 KB, uncompressed) after every booking anywhere – ` +
-            `${fmt(personen.maxKiBps)} KiB/s ≈ ${fmt((personen.maxKiBps * 8) / 1024, 1)} Mbit/s at ${fmt(a.bookingsPerSecond)} bookings/s`
+          ? `a phone that just shows the Personen list downloads ${fmt(personen.maxKiBps)} KiB/s ≈ ${fmt((personen.maxKiBps * 8) / 1024, 1)} Mbit/s at ` +
+            `${fmt(a.bookingsPerSecond)} bookings/s – a booking should cost it one row (≈ 0.4 KB); check the request table for full refetches`
           : undefined,
     });
   }
@@ -263,9 +268,12 @@ export function scenarioA2(variant: 'A2' | 'A2b') {
           measureMs: options.measureMs,
         };
         const roundsNote = heavy
-          ? 'Every booking makes each Personen phone reload the complete totals and the laptop reload all 10 list pages plus the totals.'
-          : 'Requests per booking ≈ 5 on the booking phone (create + 2 refetch rounds), 2 on every other phone, 2 on the laptop (k + 1).';
-        rec.note(`${roundsNote} Propagation is dominated by the SPA's 120 ms realtime debounce.`);
+          ? 'Every booking costs each Personen phone the booked person\'s row (≈ 0.4 KB) and the laptop its summary plus one head request – ' +
+            'the 10 loaded pages are not reloaded (before the fixes: the complete totals per Personen phone, all 10 pages + the totals on the laptop).'
+          : 'Requests per booking: 2 on the booking phone (create + its person\'s summary; the realtime echo is skipped), none on the other phones ' +
+            '(another person), 2 on the laptop (summary + head request); an undo costs DELETE + summary (+ the recent list when it was full), ' +
+            'the laptop only its summary. Before the fixes: 5, 2 and k + 1 per booking.';
+        rec.note(`${roundsNote} Propagation is measured on the screens that show the booking and is dominated by the SPA's 120 ms realtime debounce.`);
       },
     );
     return [result];

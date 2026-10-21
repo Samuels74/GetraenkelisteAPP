@@ -8,26 +8,29 @@
  *   after checking that the data still is that dataset.
  * - Hooks: .pb/loadtest-hooks = backend/pb_hooks + the test-only support
  *   routes of loadtest/support (rebuilt on every start).
- * - Both directories are only deleted through the owned-directory guard of
+ * - SPA: .pb/loadtest-spa/dist = a snapshot copy of the production build
+ *   (frontend/dist; with --build-frontend it is built here, after the lock is
+ *   taken), copied on every start: `make loadtest` rebuilds frontend/dist
+ *   with emptyOutDir, which would pull the lazy chunks away from phones that
+ *   have the app open. Restart to serve a new build.
+ * - These directories are only deleted through the owned-directory guard of
  *   paths.ts (marker file, allowed locations), and never while another
  *   process (e.g. `PB_DATA_DIR=.pb/loadtest-data make dev`) uses the data dir.
- * - PocketBase serves the production SPA build (frontend/dist; with
- *   --build-frontend it is built here, after the lock is taken) on
- *   127.0.0.1:${LOADTEST_PORT:-8091}, so 8090 stays free for make dev /
- *   make run. LOADTEST_HTTP overrides the whole listen address (e.g.
- *   0.0.0.0:8091 for phones on the LAN – a warning is printed, the passwords
- *   are well-known).
+ * - PocketBase listens on 127.0.0.1:${LOADTEST_PORT:-8091}, so 8090 stays
+ *   free for make dev / make run. LOADTEST_HTTP overrides the whole listen
+ *   address (e.g. 0.0.0.0:8091 for phones on the LAN – a warning is printed,
+ *   the passwords are well-known).
  * - The login rate limiter is off while seeding (8 logins from 127.0.0.1
  *   within a second: the instance's superuser client plus the seed's 7) and
  *   on again for the interactive session, as in production.
  * - Runs in the foreground until Ctrl+C / SIGTERM / SIGHUP, then stops
  *   PocketBase. PocketBase runs in the same process group, so a Ctrl+C in the
  *   terminal reaches it directly as well.
- * - .pb/loadtest-dev.pid (created atomically) prevents two runs on the same
- *   data dir.
+ * - .pb/loadtest-dev.pid (created atomically, a stale one taken over
+ *   atomically) prevents two runs on the same data dir.
  */
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, readlinkSync } from 'node:fs';
 import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
@@ -35,7 +38,7 @@ import { countRecords, type RateLimitSettings } from '../api.ts';
 import { DEFAULT_PASSWORD, type DatasetOptions, type ResolvedDatasetOptions } from '../dataset.ts';
 import { formatPeriods, formatSeedSummary, int } from '../format.ts';
 import { isLoopback, isPortFree, parseListenAddress, startInstance, type Instance } from '../instance.ts';
-import { createOwnedDir, displayPath, PB_HOME, realPath, removeOwnedDir, REPO_ROOT } from '../paths.ts';
+import { createOwnedDir, defaultPaths, displayPath, PB_HOME, realPath, removeOwnedDir, REPO_ROOT, snapshotSpa } from '../paths.ts';
 import { runSeed, type SeedSummary } from '../seed.ts';
 import { periodRanges, toPbDate, type PeriodKey, type TimeRange } from '../time.ts';
 import {
@@ -48,10 +51,12 @@ import {
   signalExitCode,
   UsageError,
 } from './args.ts';
+import { acquirePidLock, releasePidLock } from './lock.ts';
 
 const PB_DIR = PB_HOME;
 const DATA_DIR = path.join(PB_DIR, 'loadtest-data');
 const HOOKS_DIR = path.join(PB_DIR, 'loadtest-hooks');
+const SPA_DIR = path.join(PB_DIR, 'loadtest-spa');
 const LOG_FILE = path.join(PB_DIR, 'loadtest-pocketbase.log');
 const LOCK_FILE = path.join(PB_DIR, 'loadtest-dev.pid');
 const MARKER_FILE = path.join(DATA_DIR, 'loadtest-seed.json');
@@ -106,43 +111,20 @@ function isLoadtestDev(pid: number): boolean {
   }
 }
 
-/** Creates the lock file atomically ('wx'); a stale one (process gone) is taken over. */
+/** Creates the lock file atomically; a stale one (its process is gone) is taken over atomically (lock.ts). */
 function acquireLock(): void {
-  mkdirSync(PB_DIR, { recursive: true });
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      writeFileSync(LOCK_FILE, `${process.pid}\n`, { flag: 'wx' });
-      return;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-    }
-    let pid = 0;
-    try {
-      pid = Number(readFileSync(LOCK_FILE, 'utf8').trim());
-    } catch {
-      // removed meanwhile – try again
-    }
-    if (pid > 0 && pid !== process.pid && isLoadtestDev(pid)) {
-      throw new Error(
+  acquirePidLock(LOCK_FILE, {
+    isHolder: isLoadtestDev,
+    inUse: (pid) =>
+      new Error(
         `another loadtest-dev (pid ${pid}) is using ${displayPath(DATA_DIR)} – stop it first ` +
           `(or delete ${displayPath(LOCK_FILE)} if that process is something else)`,
-      );
-    }
-    try {
-      unlinkSync(LOCK_FILE); // stale
-    } catch {
-      // somebody else removed it
-    }
-  }
-  throw new Error(`could not take ${displayPath(LOCK_FILE)} – is another loadtest-dev starting right now?`);
+      ),
+  });
 }
 
 function releaseLock(): void {
-  try {
-    if (readFileSync(LOCK_FILE, 'utf8').trim() === String(process.pid)) unlinkSync(LOCK_FILE);
-  } catch {
-    // already gone
-  }
+  releasePidLock(LOCK_FILE);
 }
 
 /**
@@ -327,6 +309,8 @@ async function main(): Promise<number> {
     }
     if (values['build-frontend']) buildFrontend();
     controller.signal.throwIfAborted();
+    // served from a copy: a later `make loadtest` rebuilds frontend/dist with emptyOutDir
+    const spa = await snapshotSpa(defaultPaths().publicDir, SPA_DIR);
 
     let marker = keep ? await readMarker() : null;
     if (keep && !marker) {
@@ -343,7 +327,10 @@ async function main(): Promise<number> {
       await createOwnedDir(DATA_DIR);
     }
 
-    say(`starting PocketBase on ${http} (data ${displayPath(DATA_DIR)}, log ${displayPath(LOG_FILE)}) ...`);
+    say(
+      `starting PocketBase on ${http} (data ${displayPath(DATA_DIR)}, SPA ${displayPath(spa.publicDir)}, ` +
+        `log ${displayPath(LOG_FILE)}) ...`,
+    );
     try {
       instance = await startInstance({
         dataDir: DATA_DIR,
@@ -352,6 +339,7 @@ async function main(): Promise<number> {
         superuser: SUPERUSER,
         logFile: LOG_FILE,
         echo: true,
+        paths: { publicDir: spa.publicDir },
       });
     } catch (error) {
       if (!marker) throw error;
@@ -414,6 +402,7 @@ async function main(): Promise<number> {
       `             seed "${marker.options.seed}", bookings spread over ${marker.options.days} days before ` +
         `${marker.window.to.replace('T', ' ').replace(/\.\d+Z$/, ' UTC')}${reused ? ' (reused)' : ''}`,
       `Data dir     ${displayPath(DATA_DIR)} – LOADTEST_KEEP=1 make loadtest-dev reuses it`,
+      `SPA          ${displayPath(spa.publicDir)} – a copy of the build taken at the start (restart to serve a new build)`,
       `Rate limit   ${describeRateLimits(limits)}`,
       `Log          ${displayPath(LOG_FILE)}`,
       'Stop         Ctrl+C',

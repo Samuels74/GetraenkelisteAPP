@@ -141,6 +141,8 @@ export default async function setup(project: TestProject) {
 
   project.provide("pbUrl", url);
   project.provide("superuser", superuser);
+  // for tests that run the PocketBase CLI on a database of their own (src/migrations.test.ts)
+  project.provide("pocketbase", { bin: pbBin, migrationsDir, hooksDir: hooksSourceDir });
   console.log(`[api-tests] PocketBase ${pbBin} listening on ${url} (data: ${dataDir})`);
 
   return async () => {

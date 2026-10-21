@@ -52,6 +52,8 @@ test.describe('permissions of a normal user', () => {
     await expect(user.api.collection('persons').delete(personId)).rejects.toMatchObject({ status: 404 });
 
     await page.getByRole('button', { name: 'Zurück zu den Personen' }).click();
+    // (the list shows the first 100 persons – search, as with many persons)
+    await page.getByTestId('persons-search').fill(data.token);
     await expect(page.locator(`[data-testid="person-row"][data-person-number="${attr(newNumber)}"]`)).toContainText(renamed);
     await expect(page.locator(`[data-testid="person-row"][data-person-number="${attr(number)}"]`)).toHaveCount(0);
   });

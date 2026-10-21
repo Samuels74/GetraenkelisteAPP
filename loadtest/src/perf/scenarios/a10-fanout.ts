@@ -8,8 +8,10 @@
  * it) and then deleted. PocketBase checks access and encodes the record per
  * subscriber (apis/realtime.go); for creates this happens before the creator
  * gets its answer, for deletes inside the delete transaction, which holds
- * SQLite's single write connection. Every open stream also pins one of
- * PocketBase's JS VMs (static.pb.js routerUse) – memory is reported per K.
+ * SQLite's single write connection. Memory is reported per K (since
+ * static.pb.js serves the SPA through a route of its own, a stream no longer
+ * pins a JS VM – only static requests run JavaScript; before, each stream
+ * cost ≈ 0.5–0.66 MiB of server memory).
  *
  * Subscribers do not refetch here: this isolates the broadcast cost (the
  * refetch load of active screens is what A2/A3 measure).
@@ -213,9 +215,9 @@ export async function scenarioA10(ctx: PerfContext): Promise<ScenarioResult[]> {
           'subscribers the later ones include a little client-side queueing – the delivery values at the highest level are upper bounds.',
       );
       rec.note(
-        `Each open realtime stream keeps one of PocketBase's JS VMs busy for its whole lifetime (static.pb.js routerUse); beyond the ` +
-          `pool of 15 every request creates a throw-away VM. The broadcast itself costs tens of µs per subscriber; ${fmt(top)} open ` +
-          `streams were held from one client here.`,
+        `Open realtime streams no longer run JavaScript: static.pb.js registers the SPA's static route itself, so only static requests ` +
+          `pass its JS middleware (before the fixes a global middleware pinned one JS VM per stream). The broadcast itself costs tens of µs ` +
+          `per subscriber; ${fmt(top)} open streams were held from one client here – see the RSS column for the memory per stream.`,
       );
       rec.data.dbAfter = dbFileSizes(ctx.instance.dataDir);
     },

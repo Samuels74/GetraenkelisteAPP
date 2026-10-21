@@ -5,8 +5,10 @@
  * spread over 4 worker threads) create bookings back to back with the SPA's
  * request (expand included); 10 % of the creates are deleted right away
  * ("Rückgängig"). Meanwhile 6 realtime subscribers receive every event and a
- * background client fetches the reference totals 5 times per second (the
- * read load of the big screens). SQLite has one write connection – writes
+ * background client fetches the per-person totals 5 times per second (the
+ * read load of the big screens: at this rate every realtime batch holds more
+ * than 10 persons, so a Personen screen reloads all rows – `parts=perPerson`
+ * – instead of patching single rows; before the fixes: the complete totals). SQLite has one write connection – writes
  * queue in Go; this checks that they queue without errors (no SQLITE_BUSY,
  * PocketBase's busy_timeout is 10 s) and how long a tap waits meanwhile.
  *
@@ -30,7 +32,7 @@ import { latencyStats } from '../../stats.ts';
 import { describeLatency, typeTable } from '../analysis.ts';
 import { HttpClient } from '../http.ts';
 import { constantArrivals, runClosedLoopDistributed, runOpenLoop, type OpenLoopSample, type RequestTemplate } from '../load.ts';
-import { bookingBody, paths, realtimeTopics } from '../requests.ts';
+import { bookingBody, paths, realtimeTopics, totalsParams } from '../requests.ts';
 import { errorGroups, formatErrorGroups, latencies, nowAbs, summarize } from '../samples.ts';
 import { fmt, runScenario, sleep, type PerfContext } from '../scenario.ts';
 import { SseClient } from '../sse.ts';
@@ -100,12 +102,13 @@ export async function scenarioA4(ctx: PerfContext): Promise<ScenarioResult[]> {
           signal,
         );
         writing.catch(() => undefined); // awaited below; after a fault its late outcome must not be an unhandled rejection
-        // background: reference totals 5×/s, open loop, for as long as the writers run
+        // background: the per-person totals 5×/s, open loop, for as long as the writers run
+        const perPerson = paths.totals(totalsParams({ period: 'all' }, Date.now(), catalog.timeZone, ['perPerson']));
         reading = (async () => {
           const results: OpenLoopSample[] = [];
           let start = nowAbs() + 50;
           while (!signal.aborted) {
-            results.push(...(await runOpenLoop(constantArrivals(5, 1000), start, () => reader.get(paths.totals()), signal)));
+            results.push(...(await runOpenLoop(constantArrivals(5, 1000), start, () => reader.get(perPerson), signal)));
             start += 1000;
           }
           return results;
@@ -176,7 +179,7 @@ export async function scenarioA4(ctx: PerfContext): Promise<ScenarioResult[]> {
         detail: `${formatErrorGroups(groups)}; busy/locked: ${busyClient} in responses, ${busyServer} in the server log; server log warnings/errors: ${logs.count}`,
       });
       const bg = latencyStats(background.map((b) => b.ms));
-      rec.info('background.totals.p95', 'reference totals during the write burst – p95 from the scheduled time', bg.count ? bg.p95 : null, 'ms', describeLatency(bg));
+      rec.info('background.totals.p95', 'per-person totals (Personen) during the write burst – p95 from the scheduled time', bg.count ? bg.p95 : null, 'ms', describeLatency(bg));
       if (stats.server) rec.info('server.cpu.mean', 'PocketBase CPU (mean)', stats.server.cpuMeanPct, '%', `peak ${stats.server.cpuPeakPct} %`);
       const expectedEvents = (createMs.length + deleteMs.length) * subscribers.length;
       const received = subscribers.reduce((sum, s) => sum + s.stats.messages, 0);

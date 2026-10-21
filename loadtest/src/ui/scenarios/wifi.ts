@@ -13,12 +13,12 @@ import { buchenExpect, KiB, MiB, personenExpect, sumBytes, type UiEnv, type UiSc
 
 /**
  * How much the biggest API responses would shrink with gzip (level 6, as a
- * reverse proxy would send them): reference totals, a page of persons and a
- * page of the CSV export.
+ * reverse proxy would send them – deploy/reverse-proxy.md): the per-person
+ * totals (Personen), a page of persons and a page of the CSV export.
  */
 async function gzipShare(env: UiEnv, token: string): Promise<{ raw: number; gzip: number }> {
   const bodies = await Promise.all([
-    env.rest.text(token, '/api/app/totals'),
+    env.rest.text(token, '/api/app/totals', { parts: 'perPerson' }),
     env.rest.text(token, '/api/collections/persons/records', { page: '1', perPage: '1000', skipTotal: '1' }),
     env.rest.text(token, '/api/collections/bookings/records', {
       page: '1',
@@ -103,15 +103,15 @@ export const U11: UiScenario = {
     const share = (100 * gzip) / raw;
     r.add({
       key: 'gzip',
-      label: 'API JSON with gzip, in % of its uncompressed size (totals, persons page, CSV page)',
+      label: 'API JSON with gzip, in % of its uncompressed size (per-person totals, persons page, CSV page)',
       value: share,
       unit: '%',
       detail: `${Math.round(KiB(raw))} KiB → ${Math.round(KiB(gzip))} KiB`,
     });
     r.note(
-      `Network emulation (CDP): ${network.label}, cold HTTP cache. PocketBase does not compress API responses, so these ` +
-        `sizes go over the air as they are; gzip would shrink the JSON to about ${Math.round(share)} % (measured on the ` +
-        'largest responses) – a compressing reverse proxy is the cheapest fix for slow networks.',
+      `Network emulation (CDP): ${network.label}, cold HTTP cache, served by PocketBase directly. PocketBase does not compress API ` +
+        `responses, so these sizes go over the air as they are; gzip would shrink the JSON to about ${Math.round(share)} % (measured on ` +
+        'the largest responses) – deploy/reverse-proxy.md now configures compression in the reverse proxy (not part of this measurement).',
     );
   },
 };

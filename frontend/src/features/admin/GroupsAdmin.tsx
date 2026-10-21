@@ -30,7 +30,8 @@ export function GroupsAdmin() {
   }, [offerings.data]);
 
   if (groups.isPending || offerings.isPending) return <PageSpinner />;
-  const loadError = groups.error ?? offerings.error;
+  // (a failed background refresh keeps the loaded lists)
+  const loadError = (groups.data ? null : groups.error) ?? (offerings.data ? null : offerings.error);
   if (loadError) {
     return (
       <QueryError
@@ -51,13 +52,14 @@ export function GroupsAdmin() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between gap-3">
-        <p className="text-sm text-muted">Gruppen ordnen die Angebote beim Buchen.</p>
+      {/* the button moves below the text when both do not fit (narrow phones, large text) */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <p className="min-w-0 flex-[1_1_12rem] text-sm text-muted">Gruppen ordnen die Angebote beim Buchen.</p>
         <Button
           variant="primary"
           icon={<Plus className="size-5" aria-hidden />}
           onClick={() => setEdit({ mode: 'create' })}
-          className="shrink-0"
+          className="ml-auto shrink-0"
         >
           Neue Gruppe
         </Button>
@@ -223,9 +225,8 @@ function GroupForm({
           </p>
         }
         confirmLabel="Löschen"
-        loading={remove.isPending}
         error={deleteError}
-        onConfirm={() => void handleDelete()}
+        onConfirm={handleDelete}
         onClose={() => {
           setConfirmDelete(false);
           setDeleteError(null);

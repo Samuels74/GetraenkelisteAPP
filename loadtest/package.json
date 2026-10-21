@@ -12,6 +12,7 @@
     "dev": "node src/cli/dev.ts",
     "loadtest": "node src/cli/run.ts",
     "ui": "node src/cli/ui.ts",
+    "model-check": "node src/cli/model-check.ts",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {

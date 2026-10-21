@@ -7,6 +7,7 @@ import { paintedAt, PROFILES } from '../browser.ts';
 import { bookingsState, bookingToast, personTotal, SEL } from '../conditions.ts';
 import { fmtMs, max, median } from '../result.ts';
 import { buchenExpect, deleteBookings, type UiScenario } from '../scenario.ts';
+import { count as formatCount } from '../search.ts';
 
 export const U9: UiScenario = {
   id: 'U9',
@@ -57,7 +58,7 @@ export const U9: UiScenario = {
         count += 1;
         all += 1;
         const waitB = await b.watch({ total: personTotal(total, count) }, { label: `round ${i + 1}: phone B` });
-        const waitLaptop = await laptop.watch({ count: { sel: SEL.bookingsCount, text: String(all) } }, { label: `round ${i + 1}: laptop` });
+        const waitLaptop = await laptop.watch({ count: { sel: SEL.bookingsCount, text: formatCount(all) } }, { label: `round ${i + 1}: laptop` });
         const tile = a.page.locator(`${SEL.tile}[data-offering-id="${offering.id}"]`);
         const m = await a.measure({ toast: bookingToast(offering.name, offering.priceCents) }, () => a.press(tile), {
           allowStale: offerings.length === 1,
@@ -76,7 +77,8 @@ export const U9: UiScenario = {
       r.addSamples('laptop', 'Tap on phone A → laptop (Buchungen "Alle") shows the new count', toLaptop, budget, `max ${fmtMs(max(toLaptop) ?? NaN)} ms`);
       r.addSamples('phoneA.toast', 'Tap on phone A → its own confirmation toast visible', toast);
       r.note(
-        `Propagation includes the app's 120 ms realtime debounce and the refetch of the affected queries ` +
+        `Propagation includes the app's 120 ms realtime debounce and the update of the affected queries – phone B refetches its ` +
+          `person's summary and recent list, the laptop its summary plus one head request for the new booking ` +
           `(median phone B ${fmtMs(median(toB) ?? NaN)} ms, laptop ${fmtMs(median(toLaptop) ?? NaN)} ms).`,
       );
     } finally {

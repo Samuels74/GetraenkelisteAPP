@@ -167,6 +167,29 @@ test.describe('groups and offerings (Verwaltung)', () => {
     await expect(offeringRow(page, bookedMeanwhile!.name)).toBeVisible();
   });
 
+  test('Escape in the delete confirmation closes only the confirmation (edits stay)', { tag: '@regression' }, async ({
+    page,
+    data,
+  }) => {
+    const admin = await data.user({ role: 'admin' });
+    const {
+      offerings: [offering],
+    } = await data.catalog([{ label: 'Spritzer', priceCents: 300 }]);
+
+    await signIn(page, admin, '/verwaltung/angebote');
+    const dialog = await openEditDialog(page, 'offering', offering!.name);
+    const changed = `${offering!.name} (geändert)`;
+    await dialog.getByLabel('Name', { exact: true }).fill(changed);
+    await dialog.getByRole('button', { name: 'Angebot löschen' }).click();
+    const confirm = page.getByTestId('confirm-dialog');
+    // a destructive confirmation starts on "Abbrechen"
+    await expect(confirm.getByRole('button', { name: 'Abbrechen' })).toBeFocused();
+    await page.keyboard.press('Escape');
+    await expect(confirm).toBeHidden();
+    await expect(dialog).toBeVisible();
+    await expect(dialog.getByLabel('Name', { exact: true })).toHaveValue(changed);
+  });
+
   test('groups with offerings cannot be deleted, empty groups can', async ({ page, data }) => {
     const admin = await data.user({ role: 'admin' });
     const { group: full } = await data.catalog([{ label: 'Wein', priceCents: 400 }]);

@@ -16,6 +16,10 @@ CONTAINER      ?= getraenkeliste
 TEST_CONTAINER ?= getraenkeliste-test
 VOLUME         ?= getraenkeliste-data
 PORT           ?= 8090
+# make run publishes PORT on BIND – empty = all interfaces: right on a
+# development machine (a dev container cannot reach the Podman host's
+# loopback); on a server behind a reverse proxy on that host: BIND=127.0.0.1.
+BIND           ?=
 PB_PORT        ?= 8090
 VITE_PORT      ?= 5173
 LOADTEST_PORT  ?= 8091
@@ -27,8 +31,10 @@ PROJECT_LABEL  := io.getraenkeliste.project=getraenkeliste
 # The results of the expensive intermediate stages are tagged, so the prune
 # after each build removes stale layers but keeps the current build cache.
 CACHE_IMAGE    ?= localhost/getraenkeliste-cache
-# docker format: OCI images cannot carry the HEALTHCHECK
-BUILD_FLAGS    ?= --format docker --layers --build-arg PB_VERSION=$(PB_VERSION)
+# docker format: OCI images cannot carry the HEALTHCHECK. --pull=newer: base
+# images with security fixes (Alpine, Node) are pulled when the registry has a
+# newer one; without a connection the local ones are used.
+BUILD_FLAGS    ?= --format docker --layers --pull=newer --build-arg PB_VERSION=$(PB_VERSION)
 
 build_stage  = $(PODMAN) build $(BUILD_FLAGS) --target $(1) -t $(2) -f Containerfile .
 prune_images = $(PODMAN) image prune -f --filter label=$(PROJECT_LABEL) >/dev/null
@@ -86,15 +92,19 @@ loadtest: ## performance checks (LOADTEST_QUICK=1: short run); report -> ./test-
 	cd frontend && { [ -d node_modules ] || npm ci; } && npm run build
 	cd loadtest && { [ -d node_modules ] || npm ci; } && node src/cli/run.ts
 
-run: ## start the app container: port PORT=8090, volume getraenkeliste-data
+# Hardened like compose.yaml: read-only root filesystem, no capabilities. The
+# settings are not stored: pass PB_ENCRYPTION_KEY / PB_SUPERUSER_* every time.
+run: ## start the app container: PORT=8090 on all interfaces (BIND=127.0.0.1: loopback only)
 	$(PODMAN) run -d --replace --name $(CONTAINER) \
 		--restart=unless-stopped \
-		-p $(PORT):8090 \
+		-p $(if $(BIND),$(BIND):)$(PORT):8090 \
+		--read-only --tmpfs /tmp --cap-drop=ALL --security-opt no-new-privileges:true \
 		-v $(VOLUME):/pb_data \
-		$(if $(PB_SUPERUSER_EMAIL),-e PB_SUPERUSER_EMAIL -e PB_SUPERUSER_PASSWORD) \
+		$(if $(PB_SUPERUSER_EMAIL)$(PB_SUPERUSER_PASSWORD),-e PB_SUPERUSER_EMAIL -e PB_SUPERUSER_PASSWORD) \
 		$(if $(PB_ENCRYPTION_KEY),-e PB_ENCRYPTION_KEY) \
 		$(IMAGE)
-	@CONTAINER=$(CONTAINER) scripts/wait-for-app.sh $(PORT)
+	@CONTAINER=$(CONTAINER) PODMAN='$(PODMAN)' BIND=$(BIND) scripts/wait-for-app.sh $(PORT)
+	@$(if $(BIND),true,echo "note: port $(PORT) is published on all interfaces - behind a reverse proxy on this host use BIND=127.0.0.1")
 
 stop: ## stop and remove the app container (the data volume is kept)
 	@$(PODMAN) stop --ignore $(CONTAINER) >/dev/null
@@ -104,7 +114,7 @@ stop: ## stop and remove the app container (the data volume is kept)
 logs: ## follow the app container logs
 	$(PODMAN) logs -f $(CONTAINER)
 
-clean: ## remove this project's containers and images (NOT the data volume)
+clean: ## remove this project's containers, images and ./test-results (also the load-test report) – NOT the data volume
 	@$(PODMAN) rm -f --ignore $(CONTAINER) $(TEST_CONTAINER) >/dev/null
 	@$(PODMAN) rmi -f --ignore $(IMAGE) $(TEST_IMAGE) \
 		$(CACHE_IMAGE):frontend-build $(CACHE_IMAGE):pocketbase >/dev/null

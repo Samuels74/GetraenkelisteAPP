@@ -5,6 +5,7 @@ import {
   currentPerson,
   expectNoHorizontalOverflow,
   expectTapTargets,
+  filterByPerson,
   forcePasswordScreen,
   loginViaUi,
   offeringRow,
@@ -39,6 +40,8 @@ test.describe('phone layout at 360 px', { tag: '@mobile' }, () => {
       ['/buchungen?meine=1', (p) => p.getByTestId('booking-item').first()],
       ['/buchungen?meine=1&ansicht=personen', (p) => p.getByTestId('totals-person-row').first()],
       ['/buchungen?meine=1&ansicht=angebote', (p) => p.getByTestId('totals-offering-row').first()],
+      // the person filter shows the long name of the selected person (truncated)
+      [`/buchungen?person=${person.id}`, (p) => p.getByTestId('person-filter').getByText(person.number)],
       ['/buchungen?zeitraum=zeitraum', (p) => p.getByLabel('Von', { exact: true })],
       ['/verwaltung/angebote', (p) => p.getByTestId('offering-row').first()],
       ['/verwaltung/gruppen', (p) => p.getByTestId('group-row').first()],
@@ -125,6 +128,11 @@ test.describe('phone layout at 360 px', { tag: '@mobile' }, () => {
     await expectTapTargets(page.getByTestId('person-filter'));
     await expectTapTargets(page.getByTestId('only-mine'));
     await expectTapTargets(page.getByTestId('csv-export'));
+    // the person filter picks with the person picker; with a person, "×" goes back to all
+    await filterByPerson(page, person);
+    await expect(page.getByTestId('person-filter')).toContainText(person.number);
+    await expectTapTargets(page.getByTestId('person-filter'));
+    await expectTapTargets(page.getByTestId('person-filter-clear'));
     await page.getByTestId('nav-verwaltung').click();
     await expect(offeringRow(page, cola!.name)).toBeVisible();
     await expectTapTargets(page.getByRole('navigation', { name: 'Verwaltung' }).getByRole('link'));

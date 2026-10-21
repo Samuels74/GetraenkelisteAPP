@@ -1,10 +1,12 @@
 /**
  * Budgets of the browser checks (Phase 1B proposal, docs/LOADTEST.md "UI
  * checks"). WARN = a delay users notice, FAIL = a user-visible problem. They
- * express user expectations at the bar, not the current numbers: known slow
- * spots are expected to WARN (Personen search, rush jank, QR sheet) and must
- * not be "fixed" by moving a limit. All values in ms; phone = Pixel 7
- * emulation with 4× CPU throttling, desktop = Desktop Chrome.
+ * express user expectations at the bar, not the current numbers: slow spots
+ * must WARN and are never "fixed" by moving a limit – before the 2026-10-20
+ * fixes the Personen search and tab switch, the rush jank on Personen and the
+ * QR sheet WARNed on the phone; the fixes did not touch the limits (the
+ * rationales note the old and the new baseline). All values in ms; phone =
+ * Pixel 7 emulation with 4× CPU throttling, desktop = Desktop Chrome.
  */
 import type { Budget } from '../perf/types.ts';
 import type { ProfileName } from './browser.ts';
@@ -26,7 +28,7 @@ export const UI_BUDGETS = {
   'U1.ready': {
     phone: { warn: 1500, fail: 4000 },
     desktop: { warn: 1000, fail: 3000 },
-    rationale: 'opening the app at the bar: from 1.5 s (phone) the start feels sluggish, 4 s is a broken start; baseline 0.33–0.38 s / 0.18 s',
+    rationale: 'opening the app at the bar: from 1.5 s (phone) the start feels sluggish, 4 s is a broken start; baseline ≈ 0.28 s / 0.1 s',
   },
   'U2.tap': {
     phone: { warn: 300, fail: 1000 },
@@ -35,7 +37,7 @@ export const UI_BUDGETS = {
   },
   'U3.open': {
     ...both(300, 1000),
-    rationale: 'the person picker is opened for nearly every guest; baseline 72 ms phone',
+    rationale: 'the person picker is opened for nearly every guest; baseline ≈ 70–80 ms phone',
   },
   'U3.keystroke': {
     ...both(100, 200),
@@ -44,34 +46,37 @@ export const UI_BUDGETS = {
   'U4.ready': {
     phone: { warn: 2000, fail: 5000 },
     desktop: { warn: 800, fail: 2000 },
-    rationale: 'Personen is a list screen: 2 s / 0.8 s is noticeable, 5 s / 2 s a problem; baseline 1.32 s / 0.36 s',
+    rationale:
+      'Personen is a list screen: 2 s / 0.8 s is noticeable, 5 s / 2 s a problem; baseline 1.3 s / 0.34 s before the fixes (all 2000 rows), ≈ 0.35 s / 0.1 s with the first 100 rows',
   },
   'U4.keystroke': {
     ...both(300, 1000),
-    rationale: 'search must keep up with typing: 300 ms feels laggy, 1 s is broken; baseline "clear" 770 ms on the phone (known WARN)',
+    rationale: 'search must keep up with typing: 300 ms feels laggy, 1 s is broken; "clear" took ≈ 0.7 s on the phone before the fixes (WARN), now < 0.1 s',
   },
   'U4.tab': {
     ...both(300, 1000),
     rationale:
-      'switching to the Personen tab with cached data is an interaction, like a keystroke: 300 ms feels laggy, 1 s is broken; phone ≈ 0.66–0.83 s (known WARN)',
+      'switching to the Personen tab with cached data is an interaction, like a keystroke: 300 ms feels laggy, 1 s is broken; phone ≈ 0.68 s before the fixes (WARN), now ≈ 0.1 s',
   },
   'U5.block': {
     ...both(100, 300),
-    rationale: 'per booking of another device the main thread must not freeze visibly: 100 ms is a hitch, 300 ms makes taps and scrolling stutter; baseline ≈133 ms phone (known WARN)',
+    rationale:
+      'per booking of another device the main thread must not freeze visibly: 100 ms is a hitch, 300 ms makes taps and scrolling stutter; ≈ 0.12 s on the phone before the fixes (WARN), now 0',
   },
   'U6.ready': {
     phone: { warn: 3000, fail: 8000 },
     desktop: { warn: 1000, fail: 3000 },
-    rationale: 'print sheet of all persons – rarely used, so generous; baseline 1.34 s / 0.39 s',
+    rationale:
+      'print sheet of all persons – rarely used, so generous; 1.3 s / 0.34 s in one commit before the fixes, ≈ 1.5–1.8 s / 0.4 s now (step by step, the first 100 cards after ≈ 0.35 s)',
   },
   'U6.longTask': {
     ...both(500, 2000),
-    rationale: 'one frozen frame of 500 ms is visible, 2 s risks the "page unresponsive" dialog; baseline 738 ms phone (known WARN)',
+    rationale: 'one frozen frame of 500 ms is visible, 2 s risks the "page unresponsive" dialog; 0.74 s on the phone before the fixes (WARN), now ≈ 0.1 s',
   },
   'U7.cold': {
     phone: { warn: 1500, fail: 4000 },
     desktop: { warn: 1000, fail: 3000 },
-    rationale: 'Buchungen opens with the whole history ("Alle"); baseline 0.46 s / 0.15 s',
+    rationale: 'Buchungen opens with the whole history ("Alle"); baseline ≈ 0.3 s / 0.1 s',
   },
   'U7.step': {
     ...both(500, 2000),
@@ -79,16 +84,24 @@ export const UI_BUDGETS = {
   },
   'U7.more': {
     ...both(300, 1000),
-    rationale: '"Weitere laden" appends 50 rows; baseline 95–167 ms phone (up to 550 rows)',
+    rationale: '"Weitere laden" appends 50 rows (a keyset page); baseline ≈ 0.06–0.12 s phone (up to 550 rows)',
   },
   'U7.perPerson': {
     ...both(1000, 3000),
-    rationale: 'the per-person view renders every person; baseline 0.77 s phone / 0.2 s desktop',
+    rationale: 'the per-person view (its rows are loaded when it opens); baseline 0.64 s phone / 0.17 s desktop before the fixes (all rows rendered)',
+  },
+  'U7.filterOpen': {
+    ...both(300, 1000),
+    rationale: 'the person filter of Buchungen opens the person picker – the same expectation as the picker on Buchen (U3.open)',
+  },
+  more100: {
+    ...both(300, 1000),
+    rationale: '"Weitere 100 anzeigen" (Personen, "Pro Person") appends 100 rows – a tap like "Weitere laden": 300 ms is noticeable, 1 s broken',
   },
   'U8.export': {
     phone: { warn: 5000, fail: 15_000 },
     desktop: { warn: 3000, fail: 10_000 },
-    rationale: 'exporting the whole history (≈15k rows, 30 requests, ≈18 MiB) on localhost; baseline 1.45 s / 1.09 s',
+    rationale: 'exporting the whole history (≈15k rows, 30 requests, ≈18 MiB) on localhost; 1.8 s / 1.25 s before the fixes (quadratic keyset pages), ≈ 0.8 s on the desktop now',
   },
   'U9.propagation': {
     ...both(1000, 3000),

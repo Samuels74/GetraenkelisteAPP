@@ -1,12 +1,15 @@
 /**
- * Write operations. Every mutation invalidates the affected queries (realtime
- * events do the same for changes made on other devices). Updates only send the
- * fields that actually changed, so concurrent edits of other fields by another
- * admin are not overwritten with stale values.
+ * Write operations. Every mutation updates or invalidates the affected queries
+ * (realtime events do the same for changes made on other devices); bookings
+ * and cancellations go through the same targeted update as their realtime
+ * events (bookingSync.ts), person and user edits patch the new names into the
+ * cached rows like theirs. Updates only send the fields that actually changed,
+ * so concurrent edits of other fields by another admin are not overwritten
+ * with stale values.
  */
 import { useMutation, useQueryClient, type QueryClient, type QueryKey } from '@tanstack/react-query';
-import { ClientResponseError } from 'pocketbase';
 import { getCurrentUser } from '../auth/session';
+import { isPocketBaseNotFound } from '../lib/errors';
 import {
   BOOKING_EXPAND,
   bookingsCollection,
@@ -15,6 +18,7 @@ import {
   personsCollection,
   usersCollection,
 } from '../lib/pb';
+import { sortPersons } from '../lib/search';
 import type {
   BookingRecord,
   GroupRecord,
@@ -24,8 +28,15 @@ import type {
   Totals,
   UserRecord,
 } from '../lib/types';
+import {
+  applyBookingChanges,
+  applyPersonUpdates,
+  applyUserUpdates,
+  isBookingChangeHandled,
+  type BookingChange,
+} from './bookingSync';
 import { invalidateAllSafely } from './invalidate';
-import { queryKeys } from './queries';
+import { personTotalsQuery, queryKeys } from './queries';
 
 function invalidate(qc: QueryClient, ...keys: QueryKey[]): Promise<void> {
   return invalidateAllSafely(qc, keys);
@@ -37,6 +48,26 @@ function invalidate(qc: QueryClient, ...keys: QueryKey[]): Promise<void> {
 export interface CreateBookingInput {
   person: PersonRecord;
   offering: OfferingRecord;
+}
+
+/**
+ * Instant feedback on the person card (Buchen, person detail) before the
+ * refetch of its totals lands – only on mounted queries: those are being
+ * refetched right now (applyBookingChanges), so the estimate is replaced by
+ * the server's numbers; a cached but hidden query must stay marked stale.
+ */
+function showOnPersonCard(qc: QueryClient, booking: BookingRecord): void {
+  const key = queryKeys.totalsFor(personTotalsQuery(booking.person), ['summary']);
+  for (const query of qc.getQueryCache().findAll({ queryKey: key, exact: true })) {
+    const old = query.state.data as Totals | undefined;
+    if (!query.isActive() || old?.count === undefined || old.quantity === undefined || old.totalCents === undefined) continue;
+    qc.setQueryData<Totals>(query.queryKey, {
+      ...old,
+      count: old.count + 1,
+      quantity: old.quantity + booking.quantity,
+      totalCents: old.totalCents + booking.quantity * booking.unitPriceCents,
+    });
+  }
 }
 
 export function useCreateBooking() {
@@ -53,22 +84,13 @@ export function useCreateBooking() {
         },
         { expand: BOOKING_EXPAND },
       ),
-    onSuccess: (booking, { person }) => {
-      // Instant feedback for the person card before the refetch lands.
-      qc.setQueryData<Totals>(queryKeys.totalsFor({ period: 'all', personId: person.id }), (old) =>
-        old
-          ? {
-              ...old,
-              count: old.count + 1,
-              quantity: old.quantity + booking.quantity,
-              totalCents: old.totalCents + booking.quantity * booking.unitPriceCents,
-            }
-          : old,
-      );
-      qc.setQueriesData<BookingRecord[]>({ queryKey: ['bookings', 'recent', person.id] }, (old) =>
-        old ? [booking, ...old.filter((b) => b.id !== booking.id)] : old,
-      );
-      void invalidate(qc, queryKeys.bookings, queryKeys.totals);
+    onSuccess: (booking) => {
+      // One update round for the booking and its realtime echo (which can
+      // arrive before this response): whichever comes first is applied.
+      const change: BookingChange = { action: 'create', record: booking, expanded: true };
+      if (isBookingChangeHandled(qc, change)) return;
+      void applyBookingChanges(qc, [change]);
+      showOnPersonCard(qc, booking);
     },
   });
 }
@@ -76,16 +98,13 @@ export function useCreateBooking() {
 export function useDeleteBooking() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (booking: Pick<BookingRecord, 'id'>) => bookingsCollection().delete(booking.id),
+    mutationFn: (booking: BookingRecord) => bookingsCollection().delete(booking.id),
     onSettled: (_result, error, booking) => {
-      // gone after success – and after a 404 (already cancelled elsewhere)
-      const gone = !error || (error instanceof ClientResponseError && error.status === 404);
-      if (gone) {
-        qc.setQueriesData<BookingRecord[]>({ queryKey: ['bookings', 'recent'] }, (old) =>
-          old ? old.filter((b) => b.id !== booking.id) : old,
-        );
-      }
-      void invalidate(qc, queryKeys.bookings, queryKeys.totals);
+      // gone after success – and after PocketBase's 404 (already cancelled elsewhere; a proxy's 404 page says nothing)
+      const gone = !error || isPocketBaseNotFound(error);
+      if (gone) void applyBookingChanges(qc, [{ action: 'delete', record: booking }]);
+      // unclear state after a failed cancel: show the server's state
+      else void invalidate(qc, queryKeys.bookings, queryKeys.totals);
     },
   });
 }
@@ -115,8 +134,15 @@ export function useUpdatePerson() {
   return useMutation({
     mutationFn: ({ id, input }: { id: string; input: Partial<PersonInput> }) => personsCollection().update(id, input),
     onSuccess: (person) => {
-      qc.setQueryData<PersonRecord[]>(queryKeys.persons, (old) => old?.map((p) => (p.id === person.id ? person : p)));
-      void invalidate(qc, queryKeys.persons, queryKeys.bookings, queryKeys.totals);
+      // (a new number moves the person in the list – sorted like the server's list)
+      qc.setQueryData<PersonRecord[]>(queryKeys.persons, (old) =>
+        old ? sortPersons(old.map((p) => (p.id === person.id ? person : p))) : old,
+      );
+      // Like the realtime event of the change (api/realtime.ts): the new number
+      // / name / nickname go into the cached booking rows and per-person totals
+      // – no reload of every booking list and all totals on this device.
+      applyPersonUpdates(qc, [person]);
+      void invalidate(qc, queryKeys.persons);
     },
   });
 }
@@ -284,7 +310,9 @@ export function useUpdateUser() {
     mutationFn: ({ id, input }: { id: string; input: UpdateUserInput }) => usersCollection().update(id, input),
     onSuccess: (user: UserRecord) => {
       qc.setQueryData<UserRecord[]>(queryKeys.users, (old) => old?.map((u) => (u.id === user.id ? user : u)));
-      void invalidate(qc, queryKeys.users, queryKeys.bookings, queryKeys.totals);
+      // like the realtime event: the name in the cached rows ("von …", per-user totals), no reload
+      applyUserUpdates(qc, [user]);
+      void invalidate(qc, queryKeys.users);
     },
   });
 }

@@ -129,13 +129,17 @@ export class Rest {
     return this.fullList<User>(token, 'users', 'username');
   }
 
-  /** GET /api/app/totals with the SPA's query format (ISO 8601 bounds). */
-  totals(token: string, q: TotalsQuery = {}): Promise<Totals> {
+  /**
+   * GET /api/app/totals with the SPA's query format (ISO 8601 bounds); all
+   * four parts unless `parts` names some (the response then has only those).
+   */
+  totals(token: string, q: TotalsQuery = {}, parts?: ReadonlyArray<'summary' | 'perPerson' | 'perOffering' | 'perUser'>): Promise<Totals> {
     const query: Record<string, string> = {};
     if (q.from !== undefined) query.from = new Date(q.from).toISOString();
     if (q.to !== undefined) query.to = new Date(q.to).toISOString();
     if (q.person) query.person = q.person;
     if (q.createdBy) query.createdBy = q.createdBy;
+    if (parts && parts.length > 0) query.parts = parts.join(',');
     return this.request<Totals>(token, 'GET', '/api/app/totals', query);
   }
 

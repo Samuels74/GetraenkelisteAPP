@@ -36,6 +36,8 @@ export interface RunReport {
     perPeriod: Record<string, number>;
     window: { from: string; to: string; days: number; timeZone: string };
     valueCents: number;
+    /** Order the seeder created the bookings in (seed.ts; absent in reports of earlier seeders: shuffled). */
+    creationOrder?: string;
     fingerprints: { plan: string; content?: string };
   };
   planner?: PlannerInfo;
@@ -198,7 +200,8 @@ export function renderMarkdown(report: RunReport): string {
           'Dataset',
           ds
             ? `${int(ds.persons)} persons · ${ds.users} users + admin · ${int(ds.bookings)} bookings over ${ds.window.days} days (${periods} at the seed start) · ` +
-              `seed "${ds.seed}" · ${(ds.valueCents / 100).toLocaleString('en', { minimumFractionDigits: 2 })} € · plan ${ds.fingerprints.plan.slice(0, 12)}`
+              `seed "${ds.seed}" · ${(ds.valueCents / 100).toLocaleString('en', { minimumFractionDigits: 2 })} € · ` +
+              `created in ${ds.creationOrder ?? 'shuffled'} order · plan ${ds.fingerprints.plan.slice(0, 12)}`
             : 'not seeded',
         ],
         [

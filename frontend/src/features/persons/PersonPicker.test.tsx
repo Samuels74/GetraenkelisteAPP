@@ -58,6 +58,8 @@ describe('PersonPicker', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Person 123 anlegen' }));
     expect(screen.getByRole('dialog', { name: 'Neue Person' })).toBeInTheDocument();
     expect(screen.getByLabelText('Nummer')).toHaveValue('123');
+    // "Anlegen und auswählen" books the offering, too – the hint stays
+    expect(screen.getByTestId('pending-offering')).toHaveTextContent('Nach dem Anlegen wird Bier/Wein gebucht.');
   });
 
   it('closes via the close button', async () => {

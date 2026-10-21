@@ -1,13 +1,15 @@
 /**
- * U4–U6: the person screens – the Personen list with its search, the same
- * list while other devices book, and the QR print sheet. These render every
- * person (no virtualization), so they show how the client scales with 2000
- * persons.
+ * U4–U6: the person screens – the Personen list with its search and "Weitere
+ * 100 anzeigen", the same list while other devices book, and the QR print
+ * sheet. Personen renders the first 100 matches (memoized rows, the list
+ * follows the search field as a deferred value); the QR sheet renders all
+ * persons, step by step. Before the fixes both rendered every person in one
+ * commit (docs/LOADTEST-FINDINGS.md F1, F4).
  */
 import path from 'node:path';
 import { uiBudget } from '../budgets.ts';
 import { describeKinds, epochNow, paintedAt, sleep, type UiPage } from '../browser.ts';
-import { buchenTiles, personenSignature, personenState, personRowTotal, qrSheetLoad, SEL } from '../conditions.ts';
+import { buchenTiles, LIST_PAGE_SIZE, personenSignature, personenState, personRowTotal, qrSheetLoad, SEL } from '../conditions.ts';
 import type { Cond } from '../probe.ts';
 import { fmtMs, max, median } from '../result.ts';
 import { searchPersons } from '../search.ts';
@@ -30,7 +32,7 @@ import { keystrokes, timeKeystrokes } from './buchen.ts';
 export const U4: UiScenario = {
   id: 'U4',
   title: 'Personen list',
-  simulates: 'Someone opens the Personen tab (every person with their total) and searches for a guest by name.',
+  simulates: 'Someone opens the Personen tab (the first 100 persons with their totals), shows 100 more and searches for a guest by name.',
   variants: perProfile('U4', 'Personen list and search', ['phone', 'desktop'], ['phone', 'desktop']),
   timeoutMs: 150_000,
   async run(env, v, r) {
@@ -43,9 +45,19 @@ export const U4: UiScenario = {
     const kib: number[] = [];
     const longTaskSum: number[] = [];
     const longTaskMax: number[] = [];
+    const more: number[] = [];
     let kinds = '';
     let last: UiPage | undefined;
     let size: PageSize | undefined;
+    // "Weitere 100 anzeigen": tap → 200 rows and the footer "200 von <n>" painted
+    const showMore = async (page: UiPage, run: number) => {
+      const button = page.page.locator(SEL.personsMore).getByRole('button', { name: /^(Weitere \d+|1 weitere) anzeigen$/ });
+      const m = await page.measure({ list: personenState(env.fixtures.persons, 2 * LIST_PAGE_SIZE) }, () => page.press(button), {
+        label: `"Weitere 100 anzeigen" (run ${run})`,
+      });
+      more.push(paintedAt(m, 'list') - m.start);
+      await page.waitQuiet({ quietMs: 400, before: 'closing the page' });
+    };
     for (let run = 1; run <= env.runs; run++) {
       env.signal.throwIfAborted();
       const conds = await personenExpect(env, username);
@@ -68,14 +80,19 @@ export const U4: UiScenario = {
       const lt = await page.longTasks(0, done);
       longTaskSum.push(lt.total);
       longTaskMax.push(lt.max);
-      if (run === 1) size = await pageSize(page, `Personen, ${n} rows`);
+      if (run === 1) size = await pageSize(page, `Personen, ${Math.min(LIST_PAGE_SIZE, n)} of ${n} rows`);
       env.log(`${v.id}: run ${run}/${env.runs}: ready ${fmtMs(done)} ms (rows ${fmtMs(rows.at(-1) as number)} ms)`);
-      if (run < env.runs) await page.close();
-      else last = page;
+      if (run < env.runs) {
+        if (n > LIST_PAGE_SIZE) await showMore(page, run);
+        await page.close();
+      } else {
+        last = page;
+      }
     }
-    r.addSamples('ready', `Cold start → ${n} rows with totals painted`, ready, uiBudget('U4.ready', v.profile));
-    r.addSamples('rows', `Cold start → ${n} rows painted (totals still loading)`, rows);
-    r.add({ key: 'requests', label: 'API requests of the screen', value: median(requests), unit: 'count', detail: `${kinds} (Phase 1B: 8)` });
+    const shownRows = Math.min(LIST_PAGE_SIZE, n);
+    r.addSamples('ready', `Cold start → the first ${shownRows} of ${n} rows with totals painted`, ready, uiBudget('U4.ready', v.profile));
+    r.addSamples('rows', `Cold start → the first ${shownRows} rows painted (totals still loading)`, rows);
+    r.add({ key: 'requests', label: 'API requests of the screen', value: median(requests), unit: 'count', detail: `${kinds} (before the fixes: 8)` });
     r.add({ key: 'transfer', label: 'Transferred on a cold start', value: median(kib), unit: 'KiB' });
     r.add({ key: 'longTasks.sum', label: 'Long tasks until ready (sum)', value: median(longTaskSum), unit: 'ms' });
     r.add({ key: 'longTasks.max', label: 'Longest task until ready', value: median(longTaskMax), unit: 'ms' });
@@ -122,11 +139,16 @@ export const U4: UiScenario = {
       if (keystroke.verdict === 'warn' || keystroke.verdict === 'fail') {
         r.note(
           `Typing in the Personen search: "${worst.label}" takes ${fmtMs(worst.ms)} ms until the list is updated, ` +
-            `${fmtMs(worst.block)} ms of it blocking the main thread – the page re-renders every matching row ` +
-            `(clearing the field brings back all ${n}; PersonsPage renders all matches, rows are not memoized or virtualized).`,
+            `${fmtMs(worst.block)} ms of it blocking the main thread (PersonsPage.tsx renders the first ${LIST_PAGE_SIZE} matches as a deferred value).`,
         );
       }
+      if (n > LIST_PAGE_SIZE) await showMore(page, env.runs);
       await page.close();
+    }
+    if (more.length > 0) {
+      r.addSamples('more', `"Weitere 100 anzeigen" → ${2 * LIST_PAGE_SIZE} rows painted`, more, uiBudget('more100', v.profile));
+    } else {
+      r.add({ key: 'more', label: '"Weitere 100 anzeigen"', value: null, unit: 'ms', detail: `not applicable: ${n} persons fit on the first page` });
     }
 
     // in-app tab switch Buchen → Personen (what users actually do): the first one loads the route's
@@ -153,7 +175,7 @@ export const U4: UiScenario = {
     await page.close();
     r.add({
       key: 'tab.first',
-      label: 'Tab Buchen → Personen, first time (route code + totals download + render)',
+      label: 'Tab Buchen → Personen, first time (route code + per-person totals download + render)',
       value: switches[0] ?? null,
       unit: 'ms',
       budget: uiBudget('U4.ready', v.profile),
@@ -163,8 +185,8 @@ export const U4: UiScenario = {
       const tab = r.addSamples('tab.again', 'Tab Buchen → Personen again (cached data: render only)', again, uiBudget('U4.tab', v.profile));
       if (tab.verdict === 'warn' || tab.verdict === 'fail') {
         r.note(
-          `Every switch to the Personen tab freezes the ${v.profile} for about ${fmtMs(median(again) as number)} ms although all ` +
-            `data is cached: the page mounts all ${n} rows again (PersonsPage.tsx renders every row).`,
+          `Every switch to the Personen tab takes about ${fmtMs(median(again) as number)} ms on the ${v.profile} although all ` +
+            `data is cached: the page mounts its first ${shownRows} rows again.`,
         );
       }
     }
@@ -264,14 +286,20 @@ export const U5: UiScenario = {
       });
       r.add({ key: 'block.max', label: 'Main thread blocked per remote booking (worst)', value: max(block), unit: 'ms' });
       r.addSamples('propagation', 'Remote booking sent → the row shows the new total', propagation);
-      r.add({ key: 'requests', label: 'Requests per remote booking', value: median(requests), unit: 'count', detail: `${kinds} (Phase 1B: 1 – the reference totals)` });
-      r.add({ key: 'transfer', label: 'Downloaded per remote booking', value: median(kib), unit: 'KiB' });
+      r.add({
+        key: 'requests',
+        label: 'Requests per remote booking',
+        value: median(requests),
+        unit: 'count',
+        detail: `${kinds} – the booked person's row (person=<id>&parts=perPerson); before the fixes 1 – the complete totals, 253 KiB`,
+      });
+      r.add({ key: 'transfer', label: 'Downloaded per remote booking', value: median(kib), unit: 'KiB', detail: 'before the fixes 253 KiB' });
       r.data.events = pending.map((_, i) => ({ propagation: propagation[i], block: block[i], longest: longest[i], requests: requests[i] }));
       if (blocking.verdict === 'warn' || blocking.verdict === 'fail') {
         r.note(
-          `Each booking on another device freezes this ${v.profile} for about ${fmtMs(median(block) ?? 0)} ms: the realtime ` +
-            `event refetches all totals (${Math.round(median(kib) ?? 0)} KiB) and the new totals map re-renders all ` +
-            `${env.fixtures.persons.length} rows (PersonsPage.tsx: totalsById → every row).`,
+          `Each booking on another device blocks this ${v.profile} for about ${fmtMs(median(block) ?? 0)} ms: the realtime ` +
+            `event fetches the booked person's row (${Math.round((median(kib) ?? 0) * 1024)} bytes) and only the changed row should re-render ` +
+            `(PersonsPage.tsx: memoized rows).`,
         );
       }
     } finally {
@@ -286,13 +314,14 @@ export const U5: UiScenario = {
 export const U6: UiScenario = {
   id: 'U6',
   title: 'QR sheet (all persons)',
-  simulates: 'The organizer opens the print sheet with a QR code for every person.',
+  simulates: 'The organizer opens the print sheet with a QR code for every person (the cards appear step by step; printing waits for all).',
   variants: perProfile('U6', 'QR sheet of all persons', ['phone', 'desktop'], ['phone']),
   timeoutMs: 120_000,
   async run(env, v, r) {
     const login = env.login('user1');
     const n = env.fixtures.persons.length;
     const ready: number[] = [];
+    const first: number[] = [];
     const longest: number[] = [];
     const sums: number[] = [];
     let size: PageSize | undefined;
@@ -302,6 +331,7 @@ export const U6: UiScenario = {
       const load = await page.load('/personen/qr-codes', { timeoutMs: 60_000, label: `ready (cold run ${run})` });
       const done = paintedAt(load, 'ready');
       ready.push(done);
+      first.push(paintedAt(load, 'first'));
       await page.waitQuiet({ quietMs: 500, before: 'reading the long tasks' });
       const lt = await page.longTasks(0, done);
       longest.push(lt.max);
@@ -310,7 +340,8 @@ export const U6: UiScenario = {
       await page.close();
       env.log(`${v.id}: run ${run}/${env.runs}: ready ${fmtMs(done)} ms, longest task ${fmtMs(lt.max)} ms`);
     }
-    r.addSamples('ready', `Cold start → ${n} QR codes painted`, ready, uiBudget('U6.ready', v.profile));
+    r.addSamples('ready', `Cold start → all ${n} QR codes painted (printing enabled)`, ready, uiBudget('U6.ready', v.profile));
+    r.addSamples('first', `Cold start → the first ${Math.min(100, n)} QR codes painted`, first);
     const frozen = r.add({
       key: 'longTask.max',
       label: 'Longest main-thread task while rendering',
@@ -323,8 +354,8 @@ export const U6: UiScenario = {
     addPageSize(r, size);
     if (frozen.verdict === 'warn' || frozen.verdict === 'fail') {
       r.note(
-        `The QR sheet freezes the page for ${fmtMs(median(longest) ?? 0)} ms in one piece: ${n} QR codes are computed ` +
-          '(qrcode create() + SVG path) and rendered in a single React commit (QrSheetPage.tsx / lib/qr.ts).',
+        `The QR sheet blocks the page for ${fmtMs(median(longest) ?? 0)} ms in one piece although the cards are added in steps ` +
+          '(QrSheetPage.tsx useProgressiveCount: 100, then up to 400 per step) – check the step size.',
       );
     }
   },

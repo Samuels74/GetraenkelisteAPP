@@ -113,6 +113,8 @@
 }
 
 @custom-variant dark (@media (prefers-color-scheme: dark));
+/* Phones in landscape (and other short windows): the sticky person card gets more compact. */
+@custom-variant short (@media (max-height: 30rem));
 
 @layer base {
   html {
@@ -190,6 +192,18 @@
 @utility pt-safe {
   padding-top: env(safe-area-inset-top);
 }
+/*
+ * Top of the logged-in screens (AppShell): the status bar inset plus the
+ * offline banner while it is shown (--offline-banner, set by AppShell). The
+ * page container owns this padding once (pt-app); sticky bars stick below it
+ * (top-app) – the fixed TopBar covers the area above them.
+ */
+@utility pt-app {
+  padding-top: calc(env(safe-area-inset-top) + var(--offline-banner, 0px));
+}
+@utility top-app {
+  top: calc(env(safe-area-inset-top) + var(--offline-banner, 0px));
+}
 @utility pb-safe {
   padding-bottom: env(safe-area-inset-bottom);
 }
@@ -226,6 +240,17 @@
 }
 [data-sonner-toaster] [data-sonner-toast] button {
   pointer-events: auto !important;
+}
+/*
+ * Light rich-color toasts with text of at least 4.5:1 (WCAG AA): sonner's own
+ * colors reach only 3.1–4.4:1 on their backgrounds (dark mode is fine).
+ * `:root` outranks sonner's styles, which it inserts after this file.
+ */
+:root [data-sonner-toaster][data-sonner-theme='light'] {
+  --success-text: #00782c;
+  --info-text: #0865c0;
+  --warning-text: #9a5406;
+  --error-text: #c20000;
 }
 
 @media print {

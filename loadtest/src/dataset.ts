@@ -1,8 +1,10 @@
 /**
  * The load-test dataset as a pure, deterministic plan (no I/O): who exists,
- * which bookings are created in which order by which user, and when each
- * booking supposedly happened. seed.ts turns the plan into records through
- * the REST API; docs/LOADTEST.md describes the dataset.
+ * which bookings are created by which user, and when each booking supposedly
+ * happened. seed.ts turns the plan into records through the REST API –
+ * creating the bookings in the chronological order of their timestamps
+ * (creationOrder), like production stores them; docs/LOADTEST.md describes
+ * the dataset.
  *
  * Defaults (the user's request): 2000 persons numbered "1" … "2000", 5 users
  * user1 … user5, per person 5–10 bookings, each assigned uniformly at random
@@ -99,7 +101,7 @@ export interface UserPlan {
 }
 
 export interface BookingPlan {
-  /** Position in the creation order (the plan's bookings are already shuffled). */
+  /** Index in the plan (generation order: person by person). seed.ts creates the bookings in creationOrder(). */
   seq: number;
   /** Index into `Dataset.persons`. */
   person: number;
@@ -119,7 +121,7 @@ export interface Dataset {
   persons: PersonPlan[];
   users: UserPlan[];
   offerings: readonly OfferingPlan[];
-  /** In creation order. */
+  /** In generation order (index = `seq`); the creation order is chronological (creationOrder). */
   bookings: BookingPlan[];
   expected: {
     bookings: number;
@@ -132,7 +134,7 @@ export interface Dataset {
     /** Number of persons per booking count, e.g. { 5: 331, 6: 340, … }. */
     perPersonHistogram: Record<number, number>;
   };
-  /** sha256 of the whole plan – equal plans have equal fingerprints. */
+  /** sha256 of the whole plan – equal plans have equal fingerprints (the creation order follows from it and the seed start). */
   fingerprint: string;
 }
 
@@ -168,7 +170,6 @@ export function buildDataset(options: DatasetOptions = {}): Dataset {
   const namesRandom = deriveRandom(opts.seed, 'names');
   const bookingsRandom = deriveRandom(opts.seed, 'bookings');
   const timesRandom = deriveRandom(opts.seed, 'times');
-  const orderRandom = deriveRandom(opts.seed, 'order');
 
   const users: UserPlan[] = Array.from({ length: opts.users }, (_, i) => ({
     username: `user${i + 1}`,
@@ -176,7 +177,7 @@ export function buildDataset(options: DatasetOptions = {}): Dataset {
   }));
 
   const persons: PersonPlan[] = [];
-  const unordered: Omit<BookingPlan, 'seq'>[] = [];
+  const bookings: BookingPlan[] = [];
   const offeringWeights = OFFERINGS.map((offering) => offering.weight);
 
   for (let p = 0; p < opts.persons; p++) {
@@ -185,7 +186,8 @@ export function buildDataset(options: DatasetOptions = {}): Dataset {
     persons.push({ number: String(p + 1), name, nickname, bookings: count });
     for (let i = 0; i < count; i++) {
       const hour = timesRandom.weightedIndex(HOUR_WEIGHTS);
-      unordered.push({
+      bookings.push({
+        seq: bookings.length,
         person: p,
         offering: bookingsRandom.weightedIndex(offeringWeights),
         user: bookingsRandom.int(0, opts.users - 1),
@@ -195,8 +197,6 @@ export function buildDataset(options: DatasetOptions = {}): Dataset {
       });
     }
   }
-
-  const bookings: BookingPlan[] = orderRandom.shuffle(unordered).map((booking, seq) => ({ seq, ...booking }));
 
   const perUser = users.map(() => 0);
   const perOffering = OFFERINGS.map(() => 0);
@@ -252,4 +252,18 @@ export function resolveTimestamps(dataset: Dataset, anchorMs: number): number[] 
     result[booking.seq] = t;
   }
   return result;
+}
+
+/**
+ * The order in which seed.ts creates the bookings: chronological by their
+ * resolved timestamps (ties by `seq`). Production inserts bookings as they
+ * happen, so the table's row order follows `created`; creating them in that
+ * order keeps index range scans (e.g. "nur meine" over (createdBy, created))
+ * as local as in production – a shuffled creation order with backdated
+ * timestamps made them jump randomly through the table (several times
+ * slower than in production at 150k bookings). The order depends on the
+ * seed start (`timestamps`), so it is not part of the plan.
+ */
+export function creationOrder(dataset: Dataset, timestamps: readonly number[]): BookingPlan[] {
+  return [...dataset.bookings].sort((a, b) => (timestamps[a.seq] as number) - (timestamps[b.seq] as number) || a.seq - b.seq);
 }

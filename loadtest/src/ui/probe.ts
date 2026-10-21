@@ -21,6 +21,8 @@ export interface SelCond {
   sel: string;
   absent?: true;
   children?: number;
+  /** childElementCount ≥ n (a list that grows step by step, e.g. the QR sheet). */
+  minChildren?: number;
   text?: string;
   contains?: string;
   attr?: [string, string];

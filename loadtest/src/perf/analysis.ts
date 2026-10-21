@@ -4,9 +4,12 @@
  *
  * - create / delete latency from the intended (scheduled) time – bookings
  *   whose intended time lies in the window;
- * - propagation: booking intended time → another device's refetch that shows
- *   it has finished (the booking device itself is excluded), per screen;
- *   deliveries that never completed are counted as missing;
+ * - propagation: booking intended time → another device has finished the
+ *   update that shows it (patch, head request or refetch), per screen – only
+ *   for devices whose screen shows the booking (a Buchen phone of another
+ *   person has nothing to update: "unaffected"); the booking device itself is
+ *   excluded. Realtime events that never arrived and updates that never
+ *   completed (a request failed, the run ended) count as missing;
  * - requests and bytes per type and per device (responses + realtime stream)
  *   for requests started in the window;
  * - errors grouped by type and message; realtime connection statistics; the
@@ -37,8 +40,12 @@ export interface FleetAnalysis {
   propagation: {
     all: LatencyStats;
     byScreen: Partial<Record<ScreenKind, LatencyStats>>;
-    /** (booking, device) pairs without a completed refetch. */
+    /** (booking, other device) pairs whose event never arrived or whose update never completed. */
     missing: number;
+    /** Pairs whose screen does not show the booking (no update needed – e.g. a Buchen phone of another person). */
+    unaffected: number;
+    /** Pairs whose screen was updated (the propagation samples). */
+    updated: number;
   };
   traffic: DeviceTraffic[];
   byScreen: Partial<Record<ScreenKind, { devices: number; meanKiBps: number; maxKiBps: number }>>;
@@ -62,17 +69,28 @@ export function analyzeFleet(raws: readonly FleetRaw[], plan: FleetPlan): FleetA
   const deletes = raws.flatMap((raw) => raw.deletes).filter((d) => d.intended >= from && d.intended < to);
   const ok = (status: number) => status >= 200 && status < 300;
 
-  // propagation: every other device subscribed to bookings should see every create
+  // propagation: every other device subscribed to bookings must receive every create; the ones whose screen shows it must update
   const createdBy = new Map<string, { device: string; intended: number }>();
   for (const c of creates) if (c.id && ok(c.status)) createdBy.set(c.id, { device: c.device, intended: c.intended });
   const screenOf = new Map(plan.devices.map((d) => [d.id, d.screen]));
   const all: number[] = [];
   const perScreen = new Map<ScreenKind, number[]>();
-  let completed = 0;
+  let received = 0;
+  let unaffected = 0;
+  let incomplete = 0;
   for (const event of raws.flatMap((raw) => raw.events)) {
     if (event.action !== 'create') continue;
     const origin = createdBy.get(event.bookingId);
-    if (!origin || origin.device === event.device || event.doneAt <= 0) continue;
+    if (!origin || origin.device === event.device) continue;
+    received++;
+    if (!event.relevant) {
+      unaffected++;
+      continue;
+    }
+    if (event.doneAt <= 0) {
+      incomplete++;
+      continue;
+    }
     const ms = event.doneAt - origin.intended;
     all.push(ms);
     const screen = screenOf.get(event.device);
@@ -81,7 +99,6 @@ export function analyzeFleet(raws: readonly FleetRaw[], plan: FleetPlan): FleetA
       if (!list) perScreen.set(screen, (list = []));
       list.push(ms);
     }
-    completed++;
   }
   const expected = createdBy.size * Math.max(0, plan.devices.length - 1);
 
@@ -132,7 +149,9 @@ export function analyzeFleet(raws: readonly FleetRaw[], plan: FleetPlan): FleetA
     propagation: {
       all: latencyStats(all),
       byScreen: Object.fromEntries([...perScreen].map(([screen, list]) => [screen, latencyStats(list)])),
-      missing: Math.max(0, expected - completed),
+      missing: Math.max(0, expected - received) + incomplete,
+      unaffected,
+      updated: all.length,
     },
     traffic,
     byScreen,

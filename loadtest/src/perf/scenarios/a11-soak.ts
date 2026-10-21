@@ -5,11 +5,13 @@
  * (LOADTEST_SOAK_MINUTES): rush phases at 1 booking/s alternate with quiet
  * phases of more than 5 minutes. PocketBase closes realtime streams that got
  * no message for 5 minutes and every stream after 30 minutes
- * (apis/realtime.go); the SPA then reconnects and refetches every active
- * query – on Buchen the persons list (≈ 421 KB) included. The devices also
- * run the 5-minute session check. Watched: reconnects and the refetch bursts
- * they cause, PocketBase's memory over time, and the growth of auxiliary.db
- * (PocketBase logs every API request there).
+ * (apis/realtime.go); the SPA then reconnects, checks the session and
+ * refetches every active query – on Buchen the persons list (≈ 421 KB)
+ * included (the realtime reconnect refetches everything; that did not change
+ * with the fixes). Like every device, they check the session once a minute.
+ * Watched: reconnects and the refetch bursts they cause, PocketBase's memory
+ * over time, and the growth of auxiliary.db (PocketBase logs every API
+ * request there).
  */
 import { analyzeFleet, describeLatency } from '../analysis.ts';
 import { MUTATION_UNDER_LOAD, NO_ERRORS, PROPAGATION } from '../budgets.ts';
@@ -79,7 +81,7 @@ export async function scenarioA11(ctx: PerfContext): Promise<ScenarioResult[]> {
           });
         }
       }
-      const plan = { ...base, bookings, devices: base.devices.map((d) => ({ ...d, sessionRefresh: true })) };
+      const plan = { ...base, bookings };
       const before = rec.dbSizes();
       let window: ReturnType<typeof rec.window> | undefined;
       ctx.log(`    A11: soak for ${minutes} min (${bookings.length} bookings in ${soakPhases(totalMs).length} rush phases) …`);
@@ -102,7 +104,7 @@ export async function scenarioA11(ctx: PerfContext): Promise<ScenarioResult[]> {
       });
       rec.add({
         key: 'propagation.p95',
-        label: 'booking → refetched on the other devices – p95',
+        label: 'booking → shown on the other devices – p95',
         value: a.propagation.all.count ? a.propagation.all.p95 : null,
         unit: 'ms',
         budget: PROPAGATION,
@@ -149,8 +151,8 @@ export async function scenarioA11(ctx: PerfContext): Promise<ScenarioResult[]> {
       rec.data.phases = soakPhases(totalMs);
       rec.data.realtime = a.realtime;
       rec.note(
-        'After a quiet phase of more than 5 minutes PocketBase closes every realtime stream; each device reconnects and refetches all its ' +
-          'active queries (Buchen: persons list, groups, offerings, totals, recent bookings) – a burst at the moment the next rush begins.',
+        'After a quiet phase of more than 5 minutes PocketBase closes every realtime stream; each device reconnects, checks the session and ' +
+          'refetches all its active queries (Buchen: persons list, groups, offerings, totals, recent bookings) – a burst at the moment the next rush begins.',
       );
     },
   );

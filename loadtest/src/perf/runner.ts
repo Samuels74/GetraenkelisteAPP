@@ -23,12 +23,12 @@
  * option): the scenarios create and delete bookings, switch planner
  * statistics and finally the rate limiter.
  */
-import { cp, mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { DEFAULT_PASSWORD, OFFERINGS, type DatasetOptions } from '../dataset.ts';
 import { startInstance, type Instance } from '../instance.ts';
-import { checkPaths, createOwnedDir, defaultPaths, removeOwnedDir, REPO_ROOT } from '../paths.ts';
+import { checkPaths, defaultPaths, displayPath, removeOwnedDir, REPO_ROOT, snapshotSpa } from '../paths.ts';
 import { seedDataset, type SeedSummary } from '../seed.ts';
 import { collectEnvironment, type Environment } from './env.ts';
 import { HealthProbe } from './health.ts';
@@ -272,13 +272,11 @@ async function isolate(instance: Instance, planner: PlannerControl): Promise<num
 }
 
 /** The SPA build is copied so a concurrent `make loadtest-dev` / build cannot change it under the running checks. */
-async function snapshotSpa(log: (line: string) => void): Promise<{ root: string; publicDir: string }> {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'getraenkeliste-loadtest-spa-'));
-  await createOwnedDir(root);
-  const publicDir = path.join(root, 'dist');
-  await cp(defaultPaths().publicDir, publicDir, { recursive: true });
-  log(`serving a snapshot copy of frontend/dist (${publicDir})`);
-  return { root, publicDir };
+async function snapshotFrontend(log: (line: string) => void): Promise<{ root: string; publicDir: string }> {
+  const source = defaultPaths().publicDir;
+  const snapshot = await snapshotSpa(source);
+  log(`serving a snapshot copy of ${displayPath(source)} (${snapshot.publicDir})`);
+  return snapshot;
 }
 
 /** Switches PocketBase's own cron backup (migration 1790550002: daily 03:00 UTC) off in the throw-away instance. */
@@ -319,7 +317,7 @@ export async function runPerformanceChecks(options: RunnerOptions): Promise<RunR
   const wantsUi = options.ui && (uiSelection ? uiSelection.length > 0 : true);
 
   try {
-    spa = await snapshotSpa(log);
+    spa = await snapshotFrontend(log);
     instance = await startInstance({ logFile: path.join(resultsDir, 'pocketbase.log'), keepData: options.keepData, paths: { publicDir: spa.publicDir } });
     log(`PocketBase ${environment.pocketbase} on ${instance.url} (pid ${instance.pid}); results → ${path.relative(process.cwd(), resultsDir) || resultsDir}`);
     // all virtual devices log in from 127.0.0.1 – as in the other harnesses (docs/LOADTEST.md); A9 switches it on again
@@ -486,6 +484,7 @@ export async function runPerformanceChecks(options: RunnerOptions): Promise<RunR
           perPeriod: seed.counts.perPeriod,
           window: seed.window,
           valueCents: seed.value.totalCents,
+          creationOrder: seed.creationOrder,
           fingerprints: seed.fingerprints,
         }
       : undefined,

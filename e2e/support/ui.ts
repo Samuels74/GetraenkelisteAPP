@@ -114,6 +114,15 @@ export async function pickPerson(page: Page, person: { number: string }, query =
   await expect(card).toHaveAttribute('data-person-number', person.number);
 }
 
+/** Buchungen: filters by `person` through the filter field's person picker (search by `query`, default: its number). */
+export async function filterByPerson(page: Page, person: { number: string }, query = person.number): Promise<void> {
+  await page.getByTestId('person-filter').click();
+  const picker = personPicker(page);
+  await picker.getByTestId('person-search').fill(query);
+  await picker.locator(`[data-testid="person-option"][data-person-number="${attr(person.number)}"]`).click();
+  await expect(picker).toBeHidden();
+}
+
 const BOOKING_CREATE = /\/api\/collections\/bookings\/records(\?|$)/;
 
 /**

@@ -13,6 +13,7 @@ import { Button, ButtonLink } from '../../components/ui/Button';
 import { ConfirmDialog, Dialog } from '../../components/ui/Dialog';
 import { Badge, EmptyState, QueryError } from '../../components/ui/Feedback';
 import { FormError, SelectField, SwitchField, TextField } from '../../components/ui/Field';
+import { formLevelError } from '../../components/ui/formErrors';
 import { PageSpinner } from '../../components/ui/Spinner';
 import { changedFields, isEmptyPatch } from '../../lib/diff';
 import { describeError, errorMessage } from '../../lib/errors';
@@ -28,7 +29,8 @@ type EditState = { mode: 'create'; groupId: string } | { mode: 'edit'; offering:
 export function OfferingsAdmin() {
   const groups = useGroups();
   const offerings = useOfferings();
-  const references = useReferenceTotals();
+  // "Gebucht" badges: only which offerings have bookings (parts=perOffering)
+  const references = useReferenceTotals({ parts: ['perOffering'] });
   const reorder = useReorderOfferings();
   const [edit, setEdit] = useState<EditState | null>(null);
 
@@ -39,7 +41,8 @@ export function OfferingsAdmin() {
   );
 
   if (groups.isPending || offerings.isPending) return <PageSpinner />;
-  const loadError = groups.error ?? offerings.error;
+  // (a failed background refresh keeps the loaded lists)
+  const loadError = (groups.data ? null : groups.error) ?? (offerings.data ? null : offerings.error);
   if (loadError) {
     return (
       <QueryError
@@ -73,13 +76,14 @@ export function OfferingsAdmin() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between gap-3">
-        <p className="text-sm text-muted">Inaktive Angebote werden beim Buchen nicht angezeigt.</p>
+      {/* the button moves below the text when both do not fit (narrow phones, large text) */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <p className="min-w-0 flex-[1_1_12rem] text-sm text-muted">Inaktive Angebote werden beim Buchen nicht angezeigt.</p>
         <Button
           variant="primary"
           icon={<Plus className="size-5" aria-hidden />}
           onClick={() => setEdit({ mode: 'create', groupId: sortedGroups[0]!.id })}
-          className="shrink-0"
+          className="ml-auto shrink-0"
         >
           Neues Angebot
         </Button>
@@ -111,15 +115,16 @@ export function OfferingsAdmin() {
                       aria-label={`${offering.name} bearbeiten`}
                       className="flex min-h-14 min-w-0 flex-1 items-center gap-2 rounded-2xl px-3 py-1.5 text-left transition-colors hover:bg-surface-2"
                     >
+                      {/* the badges follow the price: on narrow phones they never squeeze the name */}
                       <span className="min-w-0 flex-1">
                         <span className={`block truncate font-semibold ${offering.active ? '' : 'text-muted line-through'}`}>
                           {offering.name}
                         </span>
-                        <span className="block text-sm text-muted tabular-nums">{formatCents(offering.priceCents)}</span>
-                      </span>
-                      <span className="flex flex-col items-end gap-1">
-                        {!offering.active ? <Badge tone="warning">Inaktiv</Badge> : null}
-                        {booked.has(offering.id) ? <Badge>Gebucht</Badge> : null}
+                        <span className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted">
+                          <span className="tabular-nums">{formatCents(offering.priceCents)}</span>
+                          {!offering.active ? <Badge tone="warning">Inaktiv</Badge> : null}
+                          {booked.has(offering.id) ? <Badge>Gebucht</Badge> : null}
+                        </span>
                       </span>
                     </button>
                     <ReorderButtons
@@ -232,8 +237,11 @@ function OfferingForm({ offering, defaultGroupId, groups, offerings, hasBookings
       onDone();
     } catch (error) {
       const info = describeError(error, 'offerings');
-      setErrors({ name: info.fieldErrors.name, group: info.fieldErrors.group, priceCents: info.fieldErrors.priceCents });
-      setFormError(info.message);
+      const { name, group, priceCents } = info.fieldErrors;
+      // The unique index (group, name) flags both fields with the same text –
+      // shown once, under the name (that is what to change).
+      setErrors({ name, group: group === name ? undefined : group, priceCents });
+      setFormError(formLevelError(info, ['name', 'group', 'priceCents']));
     }
   }
 
@@ -324,9 +332,8 @@ function OfferingForm({ offering, defaultGroupId, groups, offerings, hasBookings
           </p>
         }
         confirmLabel="Löschen"
-        loading={remove.isPending}
         error={deleteError}
-        onConfirm={() => void handleDelete()}
+        onConfirm={handleDelete}
         onClose={() => {
           setConfirmDelete(false);
           setDeleteError(null);

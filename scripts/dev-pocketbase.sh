@@ -2,7 +2,7 @@
 # Local development PocketBase.
 #
 # Downloads PocketBase into .pb/ (gitignored) if it is missing or has the wrong
-# version – verified against the release checksums.txt – and runs `serve` with
+# version – verified against the pinned SHA-256 below – and runs `serve` with
 # the repo's migrations, hooks and the built SPA (frontend/dist) as public dir.
 #
 # Usage:
@@ -29,6 +29,19 @@ PB_PUBLIC_DIR="${PB_PUBLIC_DIR:-frontend/dist}"
 PB_AUTOMIGRATE="${PB_AUTOMIGRATE:-false}"
 PB_HOME="$ROOT/.pb"
 PB_BIN="$PB_HOME/pocketbase"
+
+# SHA-256 of the release zips, copied from the release's checksums.txt. That
+# file comes from the same place as the zip, so it is only a cross-check. Pin
+# a new PB_VERSION here and in the Containerfile (PB_SHA256_* args).
+pinned_sha256() { # pinned_sha256 <zip name>
+  case "$1" in
+    pocketbase_0.40.4_linux_amd64.zip) echo 9042ec818570e79c3628dadcd0a756c1496d9e1173918ec409d133c02f82e5fa ;;
+    pocketbase_0.40.4_linux_arm64.zip) echo 86095bf8ed9345954f0d2bf0a5fb9b57584ae60b77ebf3b6cd23a8003a3fd418 ;;
+    pocketbase_0.40.4_linux_armv7.zip) echo 9460e0be425cf8c7ae8e58f0186c13b59478b99ccef5cf0f734d05448952284b ;;
+    pocketbase_0.40.4_darwin_amd64.zip) echo 052906521f09f6f23405cd804c930d2b7a1f8eee06d39b85723b5054b2acb4e4 ;;
+    pocketbase_0.40.4_darwin_arm64.zip) echo eeb619ea4f8a06421daedb946d133bed269fea334a760941d147f76befc25ebc ;;
+  esac
+}
 
 log() { printf '[dev-pocketbase] %s\n' "$*" >&2; }
 die() { log "ERROR: $*"; exit 1; }
@@ -90,9 +103,11 @@ ensure_pocketbase() {
     return 0
   fi
 
-  local platform zip base tmp expected actual
+  local platform zip base tmp pinned listed actual
   platform="$(detect_platform)"
   zip="pocketbase_${PB_VERSION}_${platform}.zip"
+  pinned="$(pinned_sha256 "$zip")"
+  [ -n "$pinned" ] || die "no pinned SHA-256 for $zip - add it to pinned_sha256 in $0 (from the release's checksums.txt)"
   base="https://github.com/pocketbase/pocketbase/releases/download/v${PB_VERSION}"
   tmp="$(mktemp -d)"
   # shellcheck disable=SC2064 # expand $tmp now
@@ -102,10 +117,10 @@ ensure_pocketbase() {
   fetch "$base/$zip" "$tmp/$zip"
   fetch "$base/checksums.txt" "$tmp/checksums.txt"
 
-  expected="$(awk -v f="$zip" '$2 == f {print $1}' "$tmp/checksums.txt")"
-  [ -n "$expected" ] || die "$zip is not listed in checksums.txt"
   actual="$(sha256_of "$tmp/$zip")"
-  [ "$expected" = "$actual" ] || die "checksum mismatch for $zip (expected $expected, got $actual)"
+  [ "$actual" = "$pinned" ] || die "checksum mismatch for $zip (pinned $pinned, got $actual)"
+  listed="$(awk -v f="$zip" '$2 == f {print $1}' "$tmp/checksums.txt")"
+  [ "$listed" = "$pinned" ] || die "the release's checksums.txt lists '${listed}' for $zip, the pin is $pinned"
   log "checksum ok ($actual)"
 
   unzip_pocketbase "$tmp/$zip" "$tmp/x"

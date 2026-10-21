@@ -1,16 +1,27 @@
 /**
- * U7–U8: the Buchungen screen – the booking list with its filters, "Weitere
- * laden", the per-person / per-offering views, and the CSV export of the whole
+ * U7–U8: the Buchungen screen – the booking list with its filters (the
+ * person filter is a field that opens the person picker), "Weitere laden"
+ * (keyset pages), the per-person view (first 100 rows, "Weitere 100
+ * anzeigen") and the per-offering view, and the CSV export of the whole
  * history.
  */
 import { readFile } from 'node:fs/promises';
 import { uiBudget } from '../budgets.ts';
 import { describeKinds, epochNow, paintedAt, type UiPage } from '../browser.ts';
-import { BOOKINGS_PAGE_SIZE, bookingsState, exportDone, perOfferingState, perPersonState } from '../conditions.ts';
+import {
+  BOOKINGS_PAGE_SIZE,
+  bookingsState,
+  exportDone,
+  LIST_PAGE_SIZE,
+  perOfferingState,
+  perPersonState,
+  pickerState,
+  SEL,
+} from '../conditions.ts';
 import type { Cond } from '../probe.ts';
 import { fmtMs, max, median } from '../result.ts';
 import type { Totals } from '../rest.ts';
-import { sortPersons } from '../search.ts';
+import { searchPersons, sortPersons } from '../search.ts';
 import { periodRanges, type PeriodKey } from '../../time.ts';
 import {
   addPageSize,
@@ -78,26 +89,44 @@ interface StepSample {
 
 /**
  * The steps of U7 on one loaded "Alle" page: 8 filter changes, "Weitere laden"
- * up to `clicks` times, "Pro Person", "Pro Angebot". Each timing ends when the
- * new filter's list, count and sum (or the view) are painted.
+ * up to `clicks` times, "Pro Person" (+ "Weitere 100 anzeigen"), "Pro
+ * Angebot". Each timing ends when the new filter's list, count and sum (or
+ * the view) are painted. The person filter: opening its picker is timed on
+ * its own (picker visible), searching the number is preparation, the step
+ * itself is the tap on the person → list painted.
  */
 async function runSteps(env: UiEnv, page: UiPage, username: string, clicks: number, run: number) {
   const steps: StepSample[] = [];
   const counts = new Map<string, number>();
   const person = env.person(6);
+  const option = page.page.locator(`${SEL.pickerOption}[data-person-number="${person.number}"]`);
+  let filterOpenMs: number | null = null;
+  const pickPerson = async () => {
+    const open = await page.measure(
+      { open: pickerState(searchPersons(env.fixtures.persons, '')) },
+      () => page.press(page.page.locator(SEL.personFilter)),
+      { label: `person filter → picker (run ${run})` },
+    );
+    filterOpenMs = paintedAt(open, 'open') - open.start;
+    await page.waitQuiet({ quietMs: 300, before: 'searching the person' });
+    await page.page.locator(SEL.pickerSearch).fill(person.number);
+    await option.waitFor({ state: 'visible' });
+    await page.waitQuiet({ quietMs: 300, before: 'choosing the person' });
+  };
   const period = (label: string) => () => page.press(page.page.getByTestId('period-filter').getByText(label, { exact: true }));
-  const plan: Array<{ label: string; state: FilterState; act: () => Promise<unknown> }> = [
+  const plan: Array<{ label: string; state: FilterState; prepare?: () => Promise<void>; act: () => Promise<unknown> }> = [
     { label: 'Heute', state: { period: 'today' }, act: period('Heute') },
     { label: '7 Tage', state: { period: '7d' }, act: period('7 Tage') },
     { label: '30 Tage', state: { period: '30d' }, act: period('30 Tage') },
     { label: 'Alle', state: { period: 'all' }, act: period('Alle') },
-    { label: `Person ${person.number}`, state: { personId: person.id }, act: () => page.page.getByTestId('person-filter').selectOption(person.id) },
-    { label: 'Alle Personen', state: {}, act: () => page.page.getByTestId('person-filter').selectOption('') },
+    { label: `Person ${person.number}`, state: { personId: person.id }, prepare: pickPerson, act: () => page.press(option) },
+    { label: 'Alle Personen', state: {}, act: () => page.press(page.page.locator(SEL.personFilterClear)) },
     { label: 'Nur meine', state: { mine: true }, act: () => page.press(page.page.getByTestId('only-mine')) },
     { label: 'Nur meine aus', state: {}, act: () => page.press(page.page.getByTestId('only-mine')) },
   ];
   for (const step of plan) {
     env.signal.throwIfAborted();
+    await step.prepare?.();
     const { cond, totals } = await listCond(env, username, step.state);
     const m = await page.measure({ list: cond }, step.act, { label: `step ${step.label} (run ${run})` });
     steps.push({ label: step.label, ms: paintedAt(m, 'list') - m.start });
@@ -126,8 +155,18 @@ async function runSteps(env: UiEnv, page: UiPage, username: string, clicks: numb
     { label: `"Pro Person" (run ${run})` },
   );
   const perPersonMs = paintedAt(perPerson, 'view') - perPerson.start;
-  await page.waitQuiet({ quietMs: 400, before: '"Pro Angebot"' });
+  await page.waitQuiet({ quietMs: 400, before: '"Weitere 100 anzeigen"' });
   const perPersonTask = (await page.longTasks(perPerson.start, paintedAt(perPerson, 'view'))).max;
+  let perPersonMoreMs: number | null = null;
+  if (numbers.length > LIST_PAGE_SIZE) {
+    const more = await page.measure(
+      { view: perPersonState(numbers, 2 * LIST_PAGE_SIZE) },
+      () => page.press(page.page.locator(SEL.perPersonMore).getByRole('button', { name: /^(Weitere \d+|1 weitere) anzeigen$/ })),
+      { label: `"Pro Person": "Weitere 100 anzeigen" (run ${run})` },
+    );
+    perPersonMoreMs = paintedAt(more, 'view') - more.start;
+    await page.waitQuiet({ quietMs: 400, before: '"Pro Angebot"' });
+  }
   const perOffering = await page.measure(
     { view: perOfferingState(all.perOffering.length) },
     () => page.press(page.page.getByTestId('view-switch').getByText('Pro Angebot', { exact: true })),
@@ -135,7 +174,19 @@ async function runSteps(env: UiEnv, page: UiPage, username: string, clicks: numb
   );
   const perOfferingMs = paintedAt(perOffering, 'view') - perOffering.start;
   await page.waitQuiet({ quietMs: 300, before: 'closing the page' });
-  return { steps, counts, more, perPersonMs, perPersonTask, perOfferingMs, persons: numbers.length, offerings: all.perOffering.length, bookings: all.count };
+  return {
+    steps,
+    counts,
+    more,
+    filterOpenMs,
+    perPersonMs,
+    perPersonTask,
+    perPersonMoreMs,
+    perOfferingMs,
+    persons: numbers.length,
+    offerings: all.perOffering.length,
+    bookings: all.count,
+  };
 }
 
 // ------------------------------------------------------------------ U7
@@ -144,7 +195,7 @@ export const U7: UiScenario = {
   id: 'U7',
   title: 'Buchungen list and filters',
   simulates:
-    'The host checks the bookings: opens Buchungen (whole history), switches periods, filters by person and "Nur meine", loads more rows and opens the per-person and per-offering views.',
+    'The host checks the bookings: opens Buchungen (whole history), switches periods, filters by person (picker) and "Nur meine", loads more rows and opens the per-person (+ 100 more rows) and per-offering views.',
   variants: perProfile('U7', 'Buchungen list and filters', ['phone', 'desktop'], ['phone']),
   timeoutMs: 240_000,
   async run(env, v, r) {
@@ -156,6 +207,8 @@ export const U7: UiScenario = {
     const more: StepSample[] = [];
     const perPerson: number[] = [];
     const perPersonTask: number[] = [];
+    const perPersonMore: number[] = [];
+    const filterOpen: number[] = [];
     const perOffering: number[] = [];
     let kinds = '';
     let size: PageSize | undefined;
@@ -178,6 +231,8 @@ export const U7: UiScenario = {
       more.push(...last.more);
       perPerson.push(last.perPersonMs);
       perPersonTask.push(last.perPersonTask);
+      if (last.perPersonMoreMs !== null) perPersonMore.push(last.perPersonMoreMs);
+      if (last.filterOpenMs !== null) filterOpen.push(last.filterOpenMs);
       perOffering.push(last.perOfferingMs);
       await opened.page.close();
       env.log(`${v.id}: run ${run}/${env.runs}: ready ${fmtMs(ready)} ms, Pro Person ${fmtMs(last.perPersonMs)} ms`);
@@ -185,7 +240,7 @@ export const U7: UiScenario = {
     if (!last) return;
     const counts = last.counts;
     r.addSamples('cold', 'Cold start ("Alle") → 50 rows, count and sum painted', cold, uiBudget('U7.cold', v.profile));
-    r.add({ key: 'requests', label: 'API requests of the screen', value: median(requests), unit: 'count', detail: `${kinds} (Phase 1B: 9)` });
+    r.add({ key: 'requests', label: 'API requests of the screen', value: median(requests), unit: 'count', detail: `${kinds} (before the fixes: 9)` });
     r.add({ key: 'transfer', label: 'Transferred on a cold start', value: median(kib), unit: 'KiB' });
 
     const stepMedians = mediansByLabel(steps);
@@ -217,7 +272,17 @@ export const U7: UiScenario = {
         detail: `not applicable: "Alle" has only ${last.bookings} bookings – one page, no "Weitere laden" button`,
       });
     }
-    r.addSamples('perPerson', `View "Pro Person" (${last.persons} rows) painted`, perPerson, uiBudget('U7.perPerson', v.profile), `longest task ${fmtMs(median(perPersonTask) ?? 0)} ms`);
+    r.addSamples('filter.open', 'Person filter → picker with the first 60 persons visible', filterOpen, uiBudget('U7.filterOpen', v.profile));
+    r.addSamples(
+      'perPerson',
+      `View "Pro Person" (the first ${Math.min(LIST_PAGE_SIZE, last.persons)} of ${last.persons} rows) painted`,
+      perPerson,
+      uiBudget('U7.perPerson', v.profile),
+      `longest task ${fmtMs(median(perPersonTask) ?? 0)} ms; the per-person rows are loaded when the view opens`,
+    );
+    if (perPersonMore.length > 0) {
+      r.addSamples('perPerson.more', `"Pro Person": "Weitere 100 anzeigen" → ${2 * LIST_PAGE_SIZE} rows painted`, perPersonMore, uiBudget('more100', v.profile));
+    }
     r.addSamples('perOffering', `View "Pro Angebot" (${last.offerings} rows) painted`, perOffering);
     addPageSize(r, size);
     r.data.steps = stepMedians;
@@ -281,7 +346,7 @@ export const U8: UiScenario = {
       label: 'Requests of the export',
       value: median(requests),
       unit: 'count',
-      detail: `keyset pages of 500 with expand (Phase 1B: ${Math.floor(expectedRows / 500) + 1})`,
+      detail: `keyset pages of 500 with expand (one per 500 bookings: ${Math.floor(expectedRows / 500) + 1})`,
     });
     r.add({ key: 'transfer', label: 'Downloaded for the export (JSON pages)', value: median(mib), unit: 'MiB' });
     r.add({ key: 'longTask.max', label: 'Longest main-thread task during the export', value: median(longest), unit: 'ms' });

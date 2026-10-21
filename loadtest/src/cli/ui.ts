@@ -24,7 +24,7 @@ import { loginUser } from '../api.ts';
 import { DEFAULT_PASSWORD } from '../dataset.ts';
 import { formatSeedSummary } from '../format.ts';
 import { startInstance, type Instance } from '../instance.ts';
-import { defaultPaths, displayPath, REPO_ROOT } from '../paths.ts';
+import { defaultPaths, displayPath, removeOwnedDir, REPO_ROOT, snapshotSpa } from '../paths.ts';
 import type { Login, Metric, ScenarioContext, ScenarioResult } from '../perf/types.ts';
 import { seedDataset } from '../seed.ts';
 import type { ProfileName } from '../ui/browser.ts';
@@ -119,15 +119,14 @@ function formatTable(results: readonly ScenarioResult[]): string[] {
   return lines;
 }
 
-/** Copies the SPA build, so a concurrent rebuild cannot remove files under the running instance. */
-async function snapshotPublicDir(): Promise<string> {
+/** Copies the SPA build into an owned temp dir, so a concurrent rebuild cannot remove files under the running instance. */
+async function snapshotPublicDir(): Promise<{ root: string; publicDir: string }> {
   const source = defaultPaths().publicDir;
   const index = await stat(path.join(source, 'index.html')).catch(() => null);
   if (!index) throw new UsageError(`no SPA build in ${displayPath(source)} – run: cd frontend && npm run build`);
-  const target = await mkdtemp(path.join(os.tmpdir(), 'getraenkeliste-loadtest-spa-'));
-  await cp(source, target, { recursive: true });
+  const snapshot = await snapshotSpa(source);
   log(`SPA build: ${displayPath(source)} (built ${index.mtime.toISOString()}), served from a snapshot copy`);
-  return target;
+  return snapshot;
 }
 
 async function main(): Promise<number> {
@@ -171,12 +170,12 @@ async function main(): Promise<number> {
 
   const { controller, received } = abortOnSignals((signal) => log(`\n${signal} received – stopping …`));
   let instance: Instance | undefined;
-  let publicDir: string | undefined;
+  let spa: { root: string; publicDir: string } | undefined;
   let results: ScenarioResult[] = [];
   const started = Date.now();
   try {
-    publicDir = await snapshotPublicDir();
-    instance = await startInstance({ keepData: values['keep-data'], logFile: values.log, paths: { publicDir } });
+    spa = await snapshotPublicDir();
+    instance = await startInstance({ keepData: values['keep-data'], logFile: values.log, paths: { publicDir: spa.publicDir } });
     log(`PocketBase ${instance.url} (pid ${instance.pid}); ${machineLoad()}`);
     await instance.setRateLimiting(false);
     const seed = await seedDataset({
@@ -221,7 +220,7 @@ async function main(): Promise<number> {
     }
   } finally {
     await instance?.stop();
-    if (publicDir) await rm(publicDir, { recursive: true, force: true });
+    if (spa) await removeOwnedDir(spa.root).catch((error: unknown) => log(`could not remove ${spa?.root}: ${(error as Error).message}`));
   }
   const signal = received();
   if (signal) return signalExitCode(signal);

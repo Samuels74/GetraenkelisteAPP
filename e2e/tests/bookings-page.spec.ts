@@ -3,7 +3,7 @@ import type { Page } from '@playwright/test';
 import { parseAmount, parseCsvLine } from '../support/csv';
 import type { OfferingRecord, PersonRecord, TestData, TestUser } from '../support/data';
 import { expect, test } from '../support/fixtures';
-import { attr, euro, plainAmount, reloadPage, signIn } from '../support/ui';
+import { attr, euro, filterByPerson, plainAmount, reloadPage, signIn } from '../support/ui';
 
 const CSV_HEADER = 'Datum;Uhrzeit;Nummer;Name;Nickname;Gruppe;Angebot;Anzahl;Einzelpreis;Summe;Gebucht von';
 
@@ -88,10 +88,13 @@ test.describe('bookings page (Buchungen)', () => {
     await page.getByLabel('Bis', { exact: true }).fill(todayInVienna());
     await expect(count).toHaveText('4');
 
-    // person filter, with and without "nur meine"
+    // person filter (the person picker), with and without "nur meine"
     await period.getByText('Alle', { exact: true }).click();
-    await page.getByTestId('person-filter').selectOption(s.tricky.id);
+    const personFilter = page.getByTestId('person-filter');
+    await expect(personFilter).toHaveText('Alle Personen');
+    await filterByPerson(page, s.tricky);
     await expect(page).toHaveURL(new RegExp(`person=${s.tricky.id}`));
+    await expect(personFilter).toContainText(s.tricky.number);
     await expect(count).toHaveText('1');
     await expect(total).toHaveText(euro(350));
     await page.getByTestId('only-mine').click();
@@ -102,8 +105,17 @@ test.describe('bookings page (Buchungen)', () => {
 
     // filters live in the URL
     await reloadPage(page);
-    await expect(page.getByTestId('person-filter')).toHaveValue(s.tricky.id);
+    await expect(personFilter).toHaveAttribute('data-person-id', s.tricky.id);
+    await expect(personFilter).toContainText(s.tricky.number);
     await expect(count).toHaveText('2');
+
+    // "×" goes back to all persons
+    await page.getByTestId('person-filter-clear').click();
+    await expect(page).not.toHaveURL(/[?&]person=/);
+    await expect(personFilter).toHaveAttribute('data-person-id', '');
+    await expect(personFilter).toHaveText('Alle Personen');
+    await page.getByTestId('only-mine').click();
+    await expect(count).toHaveText('4');
   });
 
   test('totals per person and per offering', async ({ page, data }) => {
@@ -223,19 +235,23 @@ test.describe('bookings page (Buchungen)', () => {
     await expect(items).toHaveCount(50);
 
     // the second page answers slowly, so the realtime event of the other
-    // phone's booking arrives while it is still loading
-    await page.route(/\/api\/collections\/bookings\/records\?page=2&/, async (route) => {
+    // phone's booking arrives while it is still loading (keyset paging: the
+    // next page is "older than the last loaded booking", `created <= …`)
+    const isNextPage = (url: URL) =>
+      url.pathname.endsWith('/api/collections/bookings/records') &&
+      (url.searchParams.get('filter') ?? '').includes('created <=');
+    await page.route(isNextPage, async (route) => {
       await new Promise((resolve) => setTimeout(resolve, 1_000)); // simulated slow network
       await route.continue();
     });
-    const secondPage = page.waitForRequest(/\/api\/collections\/bookings\/records\?page=2&/);
+    const secondPage = page.waitForRequest((request) => isNextPage(new URL(request.url())));
     await page.getByRole('button', { name: 'Weitere laden' }).click();
     await secondPage;
     const extra = await data.booking(person, water!, { by: colleague });
 
     await expect(page.getByTestId('bookings-count')).toHaveText('54');
-    // (offset paging: while page 2 is answered after the insert, one row can show
-    // up twice for a moment – the refetch after the event then settles the list)
+    // (the event arrives while the list is loading: the list is refetched once
+    // the page has arrived – nothing is lost, nothing shows twice)
     const shown = () => items.evaluateAll((elements) => elements.map((el) => el.getAttribute('data-booking-id') ?? ''));
     await expect
       .poll(async () => {

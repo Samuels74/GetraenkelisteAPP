@@ -20,7 +20,7 @@ import { FormError, TextField } from '../../components/ui/Field';
 import { describeError } from '../../lib/errors';
 import type { UserRecord } from '../../lib/types';
 import { useDocumentTitle } from '../../lib/useDocumentTitle';
-import { MIN_PASSWORD_LENGTH, validateNewPassword } from './passwordRules';
+import { PASSWORD_HINT, validateNewPassword } from './passwordRules';
 
 type Errors = Partial<Record<'oldPassword' | 'password' | 'passwordConfirm', string>>;
 
@@ -110,7 +110,7 @@ export function ForcePasswordChange({ user }: { user: UserRecord }) {
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             error={errors.password}
-            hint={`Mindestens ${MIN_PASSWORD_LENGTH} Zeichen.`}
+            hint={PASSWORD_HINT}
             autoComplete="new-password"
           />
           <TextField

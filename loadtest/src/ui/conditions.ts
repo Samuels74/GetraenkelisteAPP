@@ -14,7 +14,7 @@
  */
 import type { Cond, Conds } from './probe.ts';
 import type { Person } from './rest.ts';
-import { euro } from './search.ts';
+import { count, euro } from './search.ts';
 
 /** Selectors (data-testid attributes of the components; see the frontend). */
 export const SEL = {
@@ -31,18 +31,26 @@ export const SEL = {
   pickerList: '[data-testid="person-picker"] ul[aria-label="Personen"]',
   pickerFirst: '[data-testid="person-picker"] [data-testid="person-option"]',
   pickerMore: '[data-testid="person-picker"] ul[aria-label="Personen"] > li:last-child',
+  pickerOption: '[data-testid="person-picker"] [data-testid="person-option"]',
   personsSearch: '[data-testid="persons-search"]',
   personsList: 'ul[aria-label="Personen"]',
   personRow: '[data-testid="person-row"]',
+  /** "100 von 2000 Personen angezeigt" + "Weitere 100 anzeigen" below the Personen list (only while rows are hidden). */
+  personsMore: '[data-testid="persons-more"]',
   pageContent: '[data-testid="page-content"]',
   qrSheet: '[data-testid="qr-sheet"]',
   qrHeaderCount: 'header p',
+  /** "Weitere QR-Codes werden erstellt …" – only while the sheet is still growing. */
+  qrProgress: '[data-testid="qr-sheet-progress"]',
   bookingsList: '[data-testid="bookings-list"]',
   bookingItem: '[data-testid="bookings-list"] [data-testid="booking-item"]',
   bookingsCount: '[data-testid="bookings-count"]',
   bookingsTotal: '[data-testid="bookings-total"]',
   perPersonList: '[data-testid="totals-per-person"]',
   perPersonRow: '[data-testid="totals-person-row"]',
+  perPersonMore: '[data-testid="totals-per-person-more"]',
+  personFilter: '[data-testid="person-filter"]',
+  personFilterClear: '[data-testid="person-filter-clear"]',
   perOffering: '[data-testid="totals-per-offering"]',
   perOfferingRow: '[data-testid="totals-offering-row"]',
   offeringRow: '[data-testid="offering-row"]',
@@ -53,8 +61,11 @@ export const SEL = {
 export const BOOKINGS_PAGE_SIZE = 50;
 export const PICKER_MAX_RESULTS = 60;
 export const RECENT_LIMIT = 8;
+/** Rows of Personen / "Pro Person" rendered at first and added per "Weitere … anzeigen" (frontend/src/lib/useShowMore.ts). */
+export const LIST_PAGE_SIZE = 100;
 
-const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+/** "1 Buchung", "2.000 Personen" – counts in the app's format (lib/money.ts formatCount). */
+const plural = (n: number, one: string, many: string) => `${count(n)} ${n === 1 ? one : many}`;
 
 // ------------------------------------------------------------------ Buchen
 
@@ -118,7 +129,7 @@ export function pickerState(results: readonly Person[]): Cond {
     { sel: SEL.pickerList, children: shown + (more > 0 ? 1 : 0), visible: true },
     { sel: SEL.pickerFirst, attr: ['data-person-number', first.number] },
   ];
-  if (more > 0) parts.push({ sel: SEL.pickerMore, contains: `und ${more} weitere` });
+  if (more > 0) parts.push({ sel: SEL.pickerMore, contains: `und ${count(more)} weitere` });
   return { all: parts };
 }
 
@@ -127,28 +138,40 @@ export function pickerSignature(results: readonly Person[]): string {
   return `${Math.min(PICKER_MAX_RESULTS, results.length)}|${results[0]?.number ?? ''}|${results.length}`;
 }
 
-// ------------------------------------------------------------------ Personen
+// ------------------------------------------------------------------ Personen / "Pro Person": capped lists
 
-/** The Personen list for a result list (all matches are rendered). */
-export function personenState(results: readonly Person[]): Cond {
+/**
+ * The footer of a capped list (components/ShowMoreFooter.tsx): "<shown> von
+ * <total> Personen angezeigt" while rows are hidden, absent once all are shown.
+ */
+function showMoreFooter(sel: string, shown: number, total: number): Cond {
+  return shown < total ? { sel: `${sel} [role="status"]`, text: `${count(shown)} von ${count(total)} Personen angezeigt` } : { sel, absent: true };
+}
+
+/** The Personen list for a result list: the first `limit` matches (100 + 100 per "Weitere 100 anzeigen") and the footer. */
+export function personenState(results: readonly Person[], limit = LIST_PAGE_SIZE): Cond {
   const first = results[0];
   if (!first) return { sel: SEL.pageContent, contains: 'Keine Person gefunden' };
+  const shown = Math.min(limit, results.length);
   return {
     all: [
-      { sel: SEL.personsList, children: results.length },
+      { sel: SEL.personsList, children: shown },
       { sel: SEL.personRow, attr: ['data-person-number', first.number] },
+      showMoreFooter(SEL.personsMore, shown, results.length),
     ],
   };
 }
 
-export function personenSignature(results: readonly Person[]): string {
-  return `${results.length}|${results[0]?.number ?? ''}`;
+/** Distinguishes visible Personen states (rows shown, first row, the footer's total). */
+export function personenSignature(results: readonly Person[], limit = LIST_PAGE_SIZE): string {
+  return `${Math.min(limit, results.length)}|${results[0]?.number ?? ''}|${results.length}`;
 }
 
 /**
- * Personen loaded: `rows` = every person rendered, `ready` = also the totals
- * (the first row that has bookings shows its amount – the totals arrive in
- * one commit for all rows).
+ * Personen loaded: `rows` = the first 100 persons rendered, `ready` = also
+ * the totals (the first row that has bookings shows its amount – the totals
+ * arrive in one commit for all rows). `firstWithTotal` must be one of the
+ * rendered rows.
  */
 export function personenLoad(persons: readonly Person[], firstWithTotal: { person: Person; totalCents: number } | null): Conds {
   const rows = personenState(persons);
@@ -169,14 +192,17 @@ export function personRowTotal(person: Person, totalCents: number, count: number
 
 // ------------------------------------------------------------------ QR sheet
 
+/**
+ * The QR sheet: the cards are added step by step (100, 200, 400, 800 …);
+ * `first` = the first 100 cards painted, `ready` = every card painted and the
+ * progress hint gone (printing is enabled only then). The header count is
+ * shown from the start, so it is no completion signal on its own.
+ */
 export function qrSheetLoad(persons: number): Conds {
+  const header: Cond = { sel: SEL.qrHeaderCount, text: plural(persons, 'Person', 'Personen') };
   return {
-    ready: {
-      all: [
-        { sel: SEL.qrSheet, children: persons },
-        { sel: SEL.qrHeaderCount, text: plural(persons, 'Person', 'Personen') },
-      ],
-    },
+    first: { all: [{ sel: SEL.qrSheet, minChildren: Math.min(100, persons) }, header] },
+    ready: { all: [{ sel: SEL.qrSheet, children: persons }, header, { sel: SEL.qrProgress, absent: true }] },
   };
 }
 
@@ -194,7 +220,7 @@ export interface ListExpectation {
 /** The booking list for a filter: list for that filter, k pages of rows, summary count + sum. */
 export function bookingsState(e: ListExpectation): Cond {
   const summary: Cond[] = [
-    { sel: SEL.bookingsCount, text: String(e.count) },
+    { sel: SEL.bookingsCount, text: count(e.count) },
     { sel: SEL.bookingsTotal, text: euro(e.totalCents) },
   ];
   if (e.count === 0) {
@@ -209,14 +235,16 @@ export function bookingsState(e: ListExpectation): Cond {
   };
 }
 
-/** Per person view: one row per person with bookings, natural order. */
-export function perPersonState(numbers: readonly string[]): Cond {
+/** Per person view: one row per person with bookings, natural order – the first `limit` rows and the footer. */
+export function perPersonState(numbers: readonly string[], limit = LIST_PAGE_SIZE): Cond {
   const first = numbers[0];
   if (first === undefined) return { sel: SEL.pageContent, contains: 'Keine Buchungen' };
+  const shown = Math.min(limit, numbers.length);
   return {
     all: [
-      { sel: SEL.perPersonList, children: numbers.length },
+      { sel: SEL.perPersonList, children: shown },
       { sel: SEL.perPersonRow, attr: ['data-person-number', first] },
+      showMoreFooter(SEL.perPersonMore, shown, numbers.length),
     ],
   };
 }
@@ -235,7 +263,7 @@ export function exportDone(count: number): Conds {
 
 // ------------------------------------------------------------------ Verwaltung
 
-/** Angebote: all rows, and the reference totals arrived ("Gebucht" badges). */
+/** Angebote: all rows, and the per-offering totals arrived ("Gebucht" badges). */
 export function angeboteLoad(rows: number, booked: number): Conds {
   const list: Cond = { sel: SEL.offeringRow, count: rows };
   return { rows: list, ready: { all: [list, { sel: SEL.offeringRow, countContains: ['Gebucht', booked] }] } };

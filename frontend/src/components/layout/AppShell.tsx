@@ -1,10 +1,13 @@
 import { Beer, CircleUserRound, ReceiptText, Settings, Users, type LucideIcon } from 'lucide-react';
+import type { CSSProperties } from 'react';
 import { Link, NavLink, Outlet, useNavigation } from 'react-router';
 import { useSonner } from 'sonner';
 import { isAdmin, useCurrentUser } from '../../auth/session';
 import type { UserRecord } from '../../lib/types';
+import { useOnline } from '../../lib/useOnline';
 import { AppLogo } from '../AppLogo';
 import { cn } from '../ui/cn';
+import { OFFLINE_BANNER_HEIGHT, TopBar } from './TopBar';
 
 interface NavItem {
   to: string;
@@ -67,7 +70,8 @@ export function MainNav({ user }: { user: UserRecord }) {
                 <>
                   <span
                     className={cn(
-                      'flex h-8 w-14 items-center justify-center rounded-full transition-colors lg:h-auto lg:w-auto',
+                      // (max-w-full: five tabs on a 320 px phone with large text)
+                      'flex h-8 w-14 max-w-full items-center justify-center rounded-full transition-colors lg:h-auto lg:w-auto',
                       isActive && 'bg-primary-soft text-on-primary-soft lg:bg-transparent',
                     )}
                   >
@@ -97,27 +101,35 @@ function RouteProgress() {
   );
 }
 
-/** Layout for all logged-in pages. */
+/**
+ * Layout for all logged-in pages. It owns the top safe-area inset once
+ * (pt-app on the page, TopBar above sticky bars) and, while the browser is
+ * offline, the "Keine Verbindung" banner (--offline-banner moves the page and
+ * its sticky bars below it).
+ */
 export function AppShell() {
   const user = useCurrentUser();
+  const online = useOnline();
   // While a toast is shown, extra space at the end lets the last rows of a
   // page scroll above it (e.g. the cancel buttons of "Letzte Buchungen").
   const toastVisible = useSonner().toasts.length > 0;
   if (!user) return null;
+  const style = { '--offline-banner': online ? '0px' : OFFLINE_BANNER_HEIGHT } as CSSProperties;
   return (
-    <div className="min-h-dvh">
+    <div className="min-h-dvh" style={style}>
       <RouteProgress />
+      <TopBar offline={!online} />
       <MainNav user={user} />
       <div className="lg:pl-64">
-        <div
+        <main
           className={cn(
-            'mx-auto w-full max-w-4xl px-safe pt-safe lg:px-8',
+            'mx-auto w-full max-w-4xl px-safe pt-app lg:px-8',
             toastVisible ? 'pb-nav-toast' : 'pb-nav lg:pb-12',
           )}
           data-testid="page-content"
         >
           <Outlet />
-        </div>
+        </main>
       </div>
     </div>
   );

@@ -7,11 +7,11 @@ import { changeOwnPassword, logout, useCurrentUser } from '../../auth/session';
 import { Button } from '../../components/ui/Button';
 import { Badge, Card } from '../../components/ui/Feedback';
 import { FormError, TextField } from '../../components/ui/Field';
+import { formLevelError } from '../../components/ui/formErrors';
 import { PageHeader } from '../../components/ui/PageHeader';
 import { describeError } from '../../lib/errors';
 import type { UserRecord } from '../../lib/types';
-import { MIN_PASSWORD_LENGTH, validateNewPassword } from './passwordRules';
-
+import { PASSWORD_HINT, validateNewPassword } from './passwordRules';
 
 export function AccountPage() {
   const user = useCurrentUser();
@@ -116,11 +116,12 @@ function PasswordForm({ user }: { user: UserRecord }) {
   const [formError, setFormError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  // Deep link (/konto#passwort).
+  // Deep link (/konto#passwort): focus "Aktuelles Passwort" – the first
+  // visible field (the hidden username field for password managers comes first).
   useEffect(() => {
     if (location.hash === '#passwort') {
       sectionRef.current?.scrollIntoView({ block: 'start' });
-      sectionRef.current?.querySelector<HTMLInputElement>('input')?.focus({ preventScroll: true });
+      sectionRef.current?.querySelector<HTMLInputElement>('input:not([hidden])')?.focus({ preventScroll: true });
     }
   }, [location.hash]);
 
@@ -143,7 +144,7 @@ function PasswordForm({ user }: { user: UserRecord }) {
     } catch (err) {
       const info = describeError(err, 'account');
       setErrors(info.fieldErrors);
-      setFormError(info.fieldErrors.oldPassword || info.fieldErrors.password ? null : info.message);
+      setFormError(formLevelError(info, ['oldPassword', 'password', 'passwordConfirm']));
     } finally {
       setBusy(false);
     }
@@ -180,7 +181,7 @@ function PasswordForm({ user }: { user: UserRecord }) {
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             error={errors.password}
-            hint={`Mindestens ${MIN_PASSWORD_LENGTH} Zeichen.`}
+            hint={PASSWORD_HINT}
             autoComplete="new-password"
           />
           <TextField

@@ -6,7 +6,10 @@ import {
   setSelectedPersonId,
 } from './selectedPerson';
 
-const notFound = () => Promise.reject(new ClientResponseError({ status: 404, response: {} }));
+const notFound = () =>
+  Promise.reject(
+    new ClientResponseError({ status: 404, response: { status: 404, message: "The requested resource wasn't found.", data: {} } }),
+  );
 
 describe('selected person storage', () => {
   it('persists the selection in localStorage (gl.selectedPersonId)', () => {
@@ -36,5 +39,8 @@ describe('isPersonConfirmedGone', () => {
     );
     const offline = () => Promise.reject(new ClientResponseError({ status: 0, response: {} }));
     expect(await isPersonConfirmedGone('p1', { checkSession: async () => 'valid', fetchPerson: offline })).toBe(false);
+    // a reverse proxy's "404 page not found" while the app container restarts (no PocketBase JSON)
+    const proxy404 = () => Promise.reject(new ClientResponseError({ status: 404, data: {} }));
+    expect(await isPersonConfirmedGone('p1', { checkSession: async () => 'valid', fetchPerson: proxy404 })).toBe(false);
   });
 });

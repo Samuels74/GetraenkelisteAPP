@@ -73,6 +73,9 @@ const STATUS_MESSAGES: Record<number, string> = {
   429: 'Zu viele Anfragen – bitte kurz warten.',
 };
 
+/** A page of something in front of PocketBase instead of its answer (see isPocketBaseError). */
+const SERVER_UNREACHABLE = 'Der Server ist gerade nicht erreichbar. Bitte versuche es gleich noch einmal.';
+
 const LOGIN_FAILED = 'Anmeldung fehlgeschlagen: Benutzername oder Passwort ist falsch.';
 const ACCOUNT_DISABLED = 'Dieses Konto ist deaktiviert. Bitte wende dich an die Verwaltung.';
 const LOGIN_RATE_LIMITED = 'Zu viele Anmeldeversuche. Bitte warte eine Minute und versuche es erneut.';
@@ -107,6 +110,35 @@ const ENGLISH_VALIDATOR_TEXT = /^(must|cannot|value|values|invalid|the|failed|on
 
 export function isGenericEnglishMessage(message: string): boolean {
   return GENERIC_ENGLISH.some((pattern) => pattern.test(message.trim()));
+}
+
+/**
+ * PocketBase's own error answer: its JSON body `{ status, message, data }`
+ * (every error of PocketBase and of our hooks has that shape). An error
+ * status with any other body is a page of something in front of it – a
+ * reverse proxy's 404 or 502 while the app container restarts (Traefik
+ * answers 404 while the container has no healthy router), a captive portal, a
+ * WAF – and says nothing about the session or a record: it means "server not
+ * reachable" (never "logged out", "not found").
+ */
+export function isPocketBaseError(error: unknown): error is ClientResponseError {
+  if (!(error instanceof ClientResponseError) || error.status < 400) return false;
+  const response = error.response as { status?: unknown; message?: unknown } | null | undefined;
+  return typeof response?.status === 'number' && typeof response.message === 'string';
+}
+
+/** PocketBase answered 404 itself (the record is not there – or not visible: see app/queryClient.ts). */
+export function isPocketBaseNotFound(error: unknown): boolean {
+  return isPocketBaseError(error) && error.status === 404;
+}
+
+/**
+ * No usable answer from PocketBase: no connection (or a timeout), a server
+ * error, or a page of something in front of it (see isPocketBaseError).
+ */
+export function isConnectionProblem(error: unknown): boolean {
+  if (!(error instanceof ClientResponseError)) return false;
+  return error.status === 0 || error.status >= 500 || (error.status >= 400 && !isPocketBaseError(error));
 }
 
 function numberParam(params: Record<string, unknown> | undefined, key: string): number | undefined {
@@ -231,6 +263,9 @@ export function describeError(error: unknown, context?: ErrorContext): ErrorInfo
   } else if (status === 429) {
     // rate limit (e.g. login attempts) – never show the server's English text
     message = context === 'auth' ? LOGIN_RATE_LIMITED : STATUS_MESSAGES[429]!;
+  } else if (status !== 413 && !isPocketBaseError(error)) {
+    // a proxy's page (404 / 502 while the app restarts …) – not "Konto deaktiviert", "nicht gefunden"
+    message = SERVER_UNREACHABLE;
   } else if (context === 'auth' && status === 403) {
     // authRule `disabled = false` not satisfied
     message = ACCOUNT_DISABLED;
@@ -257,5 +292,5 @@ export function errorMessage(error: unknown, context?: ErrorContext): string {
 }
 
 export function isUnauthorized(error: unknown): boolean {
-  return error instanceof ClientResponseError && error.status === 401;
+  return isPocketBaseError(error) && error.status === 401;
 }

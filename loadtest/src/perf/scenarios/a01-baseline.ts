@@ -32,7 +32,20 @@ import { describeLatency } from '../analysis.ts';
 import { LIST_PAGE, PERSONS_SEQUENCE, SMALL_REQUEST, TOTALS_ALL_SIZE, TOTALS_LARGE } from '../budgets.ts';
 import { HttpClient, parseJson, type HttpResult } from '../http.ts';
 import { explainPlan } from '../planner.ts';
-import { bookingBody, bookingsFilter, paths, RECENT_BUCHEN, RECENT_DETAIL, totalsParams, toPbDate, type BookingQuery } from '../requests.ts';
+import {
+  bookingBody,
+  bookingsFilter,
+  keysetFilter,
+  keysetNewerFilter,
+  paths,
+  RECENT_BUCHEN,
+  RECENT_DETAIL,
+  totalsParams,
+  toPbDate,
+  type BookingQuery,
+  type KeysetCursor,
+  type TotalsPart,
+} from '../requests.ts';
 import { fmt, sleep, startScenario, type PerfContext, type ScenarioRecorder } from '../scenario.ts';
 import type { Budget, ScenarioResult } from '../types.ts';
 import { periodRanges } from '../../time.ts';
@@ -79,6 +92,13 @@ interface ListVariant {
   key: string;
   label: string;
   query: BookingQuery;
+  /** Totals variants: the parts the screen requests (undefined = all four, no `parts` parameter). */
+  parts?: TotalsPart[];
+}
+
+/** The newest bookings of a list response (ids + created). */
+function cursors(result: HttpResult): KeysetCursor[] {
+  return parseJson<{ items: Array<{ id: string; created: string }> }>(result).items.map(({ id, created }) => ({ id, created }));
 }
 
 export async function scenarioA1(ctx: PerfContext): Promise<ScenarioResult[]> {
@@ -143,17 +163,30 @@ export async function scenarioA1(ctx: PerfContext): Promise<ScenarioResult[]> {
       { key: 'list.7d-mine', label: 'list p1 – 7 Tage + nur meine', query: { period: '7d', createdBy: user1Id } },
       { key: 'list.30d-mine', label: 'list p1 – 30 Tage + nur meine', query: { period: '30d', createdBy: user1Id } },
     ];
+    // the totals requests as the screens send them (`parts`, docs/ARCHITECTURE.md §5)
+    const summary: TotalsPart[] = ['summary'];
     const totalsVariants: ListVariant[] = [
-      { key: 'totals.all', label: 'totals – all (reference)', query: { period: 'all' } },
-      { key: 'totals.today', label: 'totals – Heute', query: { period: 'today' } },
-      { key: 'totals.7d', label: 'totals – 7 Tage', query: { period: '7d' } },
-      { key: 'totals.30d', label: 'totals – 30 Tage', query: { period: '30d' } },
-      { key: 'totals.mine', label: 'totals – nur meine', query: { period: 'all', createdBy: user1Id } },
-      { key: 'totals.today-mine', label: 'totals – Heute + nur meine', query: { period: 'today', createdBy: user1Id } },
-      { key: 'totals.person', label: 'totals – person (Buchen card)', query: { period: 'all', personId: otherPerson.id } },
+      { key: 'totals.perPerson', label: 'totals – per person, all bookings (Personen)', query: { period: 'all' }, parts: ['perPerson'] },
+      { key: 'totals.all', label: 'totals – Alle, summary (Buchungen list)', query: { period: 'all' }, parts: summary },
+      { key: 'totals.today', label: 'totals – Heute, summary', query: { period: 'today' }, parts: summary },
+      { key: 'totals.7d', label: 'totals – 7 Tage, summary', query: { period: '7d' }, parts: summary },
+      { key: 'totals.30d', label: 'totals – 30 Tage, summary', query: { period: '30d' }, parts: summary },
+      { key: 'totals.mine', label: 'totals – nur meine, summary', query: { period: 'all', createdBy: user1Id }, parts: summary },
+      { key: 'totals.today-mine', label: 'totals – Heute + nur meine, summary', query: { period: 'today', createdBy: user1Id }, parts: summary },
+      { key: 'totals.proPerson', label: 'totals – Alle, summary + per person ("Pro Person")', query: { period: 'all' }, parts: ['summary', 'perPerson'] },
+      { key: 'totals.perOffering', label: 'totals – per offering (Verwaltung → Angebote)', query: { period: 'all' }, parts: ['perOffering'] },
+      { key: 'totals.perUser', label: 'totals – per user (Verwaltung → Benutzer)', query: { period: 'all' }, parts: ['perUser'] },
+      { key: 'totals.person', label: 'totals – person, summary (Buchen card)', query: { period: 'all', personId: otherPerson.id }, parts: summary },
+      {
+        key: 'totals.personRow',
+        label: "totals – one person's row (realtime update on Personen)",
+        query: { period: 'all', personId: otherPerson.id },
+        parts: ['perPerson'],
+      },
+      { key: 'totals.full', label: 'totals – all four parts (no "parts"; what the big screens requested before the fixes)', query: { period: 'all' } },
     ];
     const listPath = (v: ListVariant) => paths.bookings(bookingsFilter(v.query, Date.now(), tz));
-    const totalsPath = (v: ListVariant) => paths.totals(totalsParams(v.query, Date.now(), tz));
+    const totalsPath = (v: ListVariant) => paths.totals(totalsParams(v.query, Date.now(), tz, v.parts));
     const comparison = [
       ...listVariants.filter((v) => ['list.all', 'list.today', 'list.30d', 'list.mine', 'list.today-mine', 'list.7d-mine', 'list.30d-mine'].includes(v.key)),
       ...totalsVariants.filter((v) => ['totals.30d', 'totals.mine', 'totals.today-mine'].includes(v.key)),
@@ -208,6 +241,20 @@ export async function scenarioA1(ctx: PerfContext): Promise<ScenarioResult[]> {
       const m = await measure(v.key, v.label, warmup, n, () => get(user1, listPath(v)));
       if (probe.status === 200 && itemCount(probe) === 0) m.empty = true;
       results.push(m);
+    }
+    // "Weitere laden" (keyset page 2) and the realtime head request: one new booking, newer than the newest shown one
+    const first = cursors(await user1.get(paths.bookings(''), { collect: true }));
+    const lastOfPage1 = first.at(-1);
+    if (lastOfPage1) {
+      results.push(await measure('list.page2', 'list p2 – Alle ("Weitere laden", keyset)', warmup, n, () => get(user1, paths.bookings(keysetFilter('', lastOfPage1)))));
+    }
+    const secondNewest = first[1];
+    if (secondNewest) {
+      results.push(
+        await measure('list.head', 'list – realtime head request (Alle, 1 new booking)', warmup, n, () =>
+          get(user1, paths.bookings(keysetNewerFilter('', secondNewest))),
+        ),
+      );
     }
     results.push(
       await measure('recent8', 'recent bookings of a person (8, Buchen)', warmup, n, () => get(user1, paths.recent(otherPerson.id, RECENT_BUCHEN))),
@@ -293,23 +340,27 @@ const BUDGET_OF: Record<string, Budget> = {
   recent20: SMALL_REQUEST,
   refresh: SMALL_REQUEST,
   'totals.person': SMALL_REQUEST,
+  'totals.personRow': SMALL_REQUEST,
   persons: PERSONS_SEQUENCE,
 };
 
 function budgetFor(key: string): Budget | undefined {
   if (BUDGET_OF[key]) return BUDGET_OF[key];
+  if (key === 'totals.full') return undefined; // not sent by the app any more – the comparison with the baseline
   if (key.startsWith('list.')) return LIST_PAGE;
   if (key.startsWith('totals.')) return TOTALS_LARGE;
   return undefined;
 }
 
 const CONSEQUENCE: Record<string, string> = {
-  persons: 'the persons list is loaded on every app start, picker opening after 30 s and every persons change',
-  'totals.all':
-    'Personen, Buchungen ("Alle") and the admin screens refetch these totals after every booking anywhere – a slow answer delays every device on those screens',
+  persons: 'the persons list is loaded on every app start, after every persons change and every realtime reconnect',
+  'totals.perPerson': 'Personen and "Pro Person" load these rows when they open, and again after a reconnect or when more than 10 persons booked at once',
+  'totals.all': 'Buchungen ("Alle") refetches its summary after every booking anywhere – a slow answer delays every laptop on Buchungen',
+  'list.head': 'every laptop on Buchungen sends this request after a booking elsewhere (one for all bookings that arrive while it runs)',
+  'totals.personRow': 'every phone on Personen sends one of these per booked person after every booking elsewhere',
   create: 'every booking tap waits for this answer before the toast appears',
   delete: '"Rückgängig" waits for this answer',
-  refresh: 'every app start and reconnect checks the session',
+  refresh: 'every device checks the session at the start, every minute and on every realtime reconnect',
 };
 
 function reportBaseline(rec: ScenarioRecorder, results: Measured[], serverCpu: number | null): void {
@@ -341,18 +392,18 @@ function reportBaseline(rec: ScenarioRecorder, results: Measured[], serverCpu: n
       });
     }
   }
-  const totalsAll = results.find((m) => m.key === 'totals.all');
-  if (totalsAll) {
-    const kib = Math.round((totalsAll.bytesMean / 1024) * 10) / 10;
+  const perPerson = results.find((m) => m.key === 'totals.perPerson');
+  if (perPerson) {
+    const kib = Math.round((perPerson.bytesMean / 1024) * 10) / 10;
     rec.add({
-      key: 'totals.all.size',
-      label: 'totals – all: response size',
+      key: 'totals.perPerson.size',
+      label: 'totals – per person (all bookings): response size',
       value: kib,
       unit: 'KiB',
       budget: TOTALS_ALL_SIZE,
-      detail: `uncompressed JSON (PocketBase does not compress API responses); ${fmt(kib)} KiB × every booking × every device on Personen / Buchungen / admin screens`,
+      detail: `uncompressed JSON (PocketBase does not compress API responses; a reverse proxy can – deploy/reverse-proxy.md); downloaded when Personen or "Pro Person" opens, after a reconnect and when more than 10 persons booked in one realtime batch – single bookings update one row (totals.personRow)`,
       explain: (verdict) =>
-        verdict === 'warn' ? 'the per-person rows make this response grow with the number of persons – every refetch downloads all of them' : undefined,
+        verdict === 'warn' ? 'the per-person rows make this response grow with the number of persons – every full load downloads all of them' : undefined,
     });
   }
   if (serverCpu !== null) rec.info('server.cpu.mean', 'PocketBase CPU during A1 (mean)', serverCpu, '%');
@@ -385,6 +436,8 @@ async function explainSet(ctx: PerfContext, userId: string, tz: string): Promise
   const d30 = { from: toPbDate(ranges['30d'].from!), to: toPbDate(ranges['30d'].to!) };
   const list = (where: string) =>
     `SELECT bookings.* FROM bookings WHERE ({:auth} IS NOT '') AND (${where}) ORDER BY bookings.created DESC, bookings.id DESC LIMIT 50`;
+  // backend/pb_hooks/lib/totals.js AGGREGATES (they decide whether an index covers the query)
+  const agg = 'COUNT(*), COALESCE(SUM(b."quantity"), 0), COALESCE(SUM(b."quantity" * b."unitPriceCents"), 0)';
   const statements: Record<string, [string, Record<string, string>]> = {
     'list Heute + nur meine': [
       list('(bookings.created >= {:f} AND bookings.created < {:t} AND bookings.createdBy = {:u})'),
@@ -395,22 +448,36 @@ async function explainSet(ctx: PerfContext, userId: string, tz: string): Promise
       { auth: userId, f: d30.from, t: d30.to, u: userId },
     ],
     'list nur meine': [list('bookings.createdBy = {:u}'), { auth: userId, u: userId }],
-    'totals Heute + nur meine (sum)': [
-      'SELECT COUNT(*) FROM "bookings" b WHERE b."created" >= {:f} AND b."created" < {:t} AND b."createdBy" = {:u}',
+    'totals Heute + nur meine (summary)': [
+      `SELECT ${agg} FROM "bookings" b WHERE b."created" >= {:f} AND b."created" < {:t} AND b."createdBy" = {:u}`,
       { f: today.from, t: today.to, u: userId },
     ],
+    'totals nur meine (summary)': [`SELECT ${agg} FROM "bookings" b WHERE b."createdBy" = {:u}`, { u: userId }],
+    // backend/pb_hooks/lib/totals.js: the breakdowns aggregate first and join the result rows afterwards
     'totals 30 Tage (per person)': [
-      'SELECT b."person", COUNT(*) FROM "bookings" b LEFT JOIN "persons" p ON p."id" = b."person" WHERE b."created" >= {:f} AND b."created" < {:t} GROUP BY b."person" ORDER BY p."number" COLLATE NOCASE, b."person"',
+      `SELECT t."personId", p."number" FROM (SELECT b."person" AS "personId", ${agg} FROM "bookings" b ` +
+        'WHERE b."created" >= {:f} AND b."created" < {:t} GROUP BY b."person") t LEFT JOIN "persons" p ON p."id" = t."personId" ' +
+        'ORDER BY p."number" COLLATE NOCASE, t."personId"',
       { f: d30.from, t: d30.to },
     ],
-    // the CSV export's keyset page: PocketBase binds both cursor literals separately
-    'CSV export keyset page (as sent)': [
-      `SELECT bookings.* FROM bookings WHERE ({:auth} IS NOT '') AND ((bookings.created < {:c1} OR (bookings.created = {:c2} AND bookings.id < {:i}))) ORDER BY bookings.created DESC, bookings.id DESC LIMIT 500`,
-      { auth: userId, c1: d30.from, c2: d30.from, i: 'zzzzzzzzzzzzzzz' },
+    'totals per user (Benutzer)': [
+      `SELECT t."userId", u."username" FROM (SELECT b."createdBy" AS "userId", ${agg} FROM "bookings" b GROUP BY b."createdBy") t ` +
+        'LEFT JOIN "users" u ON u."id" = t."userId" ORDER BY u."username", t."userId"',
+      {},
     ],
-    'CSV keyset page with created <= c (comparison)': [
+    // the Buchungen list's realtime head request (keysetNewerFilter): newer than the newest shown booking
+    'list head request (Alle)': [
+      list('bookings.created >= {:c0} AND (bookings.created > {:c1} OR (bookings.created = {:c2} AND bookings.id > {:i}))'),
+      { auth: userId, c0: today.from, c1: today.from, c2: today.from, i: '' },
+    ],
+    // the CSV export's / "Weitere laden" keyset page: PocketBase binds every cursor literal separately
+    'keyset page (as sent: created <= c && …)': [
       `SELECT bookings.* FROM bookings WHERE ({:auth} IS NOT '') AND (bookings.created <= {:c0} AND (bookings.created < {:c1} OR (bookings.created = {:c2} AND bookings.id < {:i}))) ORDER BY bookings.created DESC, bookings.id DESC LIMIT 500`,
       { auth: userId, c0: d30.from, c1: d30.from, c2: d30.from, i: 'zzzzzzzzzzzzzzz' },
+    ],
+    'keyset page before the F3 fix (comparison)': [
+      `SELECT bookings.* FROM bookings WHERE ({:auth} IS NOT '') AND ((bookings.created < {:c1} OR (bookings.created = {:c2} AND bookings.id < {:i}))) ORDER BY bookings.created DESC, bookings.id DESC LIMIT 500`,
+      { auth: userId, c1: d30.from, c2: d30.from, i: 'zzzzzzzzzzzzzzz' },
     ],
   };
   const out: Record<string, string[]> = {};
@@ -449,10 +516,16 @@ function reportPlanner(
   }
   rec.table('Query plans (EXPLAIN QUERY PLAN)', { columns: ['statement', 'fresh database', 'with statistics'], rows: planRows });
   const bookingsStats = steadyInfo.stat1.filter((row) => row.tbl === 'bookings').map((row) => `${row.idx} "${row.stat}"`);
+  const freshRows = Array.isArray(fresh.stat1) ? (fresh.stat1 as Array<{ tbl: string; stat?: string }>) : [];
+  const freshApp = [...new Set(freshRows.filter((row) => steadyInfo.appTables.includes(row.tbl)).map((row) => row.tbl))];
   rec.note(
     `PocketBase runs "PRAGMA optimize" itself every night at 00:00 UTC and after schema changes; a freshly seeded database has statistics ` +
-      `for PocketBase's system tables only. After the optimize (${steadyInfo.optimizeMs ?? '?'} ms) sqlite_stat1 covers ` +
-      `${steadyInfo.appTables.join(', ')} (bookings: ${bookingsStats.join(', ')}).`,
+      `for PocketBase's system tables` +
+      (freshApp.length > 0
+        ? ` and seed-state rows for ${freshApp.join(', ')} (written by the optimize after the app's last index migration, while those ` +
+          'tables still held only their seed rows – the nightly optimize does not refresh them for small tables)'
+        : ' only') +
+      `. After the optimize (${steadyInfo.optimizeMs ?? '?'} ms) sqlite_stat1 covers ${steadyInfo.appTables.join(', ')} (bookings: ${bookingsStats.join(', ')}).`,
   );
   rec.note(
     changed.length > 0

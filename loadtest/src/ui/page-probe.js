@@ -175,6 +175,7 @@
    *   { sel, ...checks }                   on document.querySelector(sel) unless noted:
    *     absent: true                       no match
    *     children: n                        childElementCount
+   *     minChildren: n                     childElementCount ≥ n
    *     text: s / contains: s              normalized textContent equal / includes
    *     attr: [name, value]                attribute value
    *     count: n / min: n                  querySelectorAll(sel).length (only for small lists)
@@ -199,6 +200,7 @@
     const single =
       c.absent !== undefined ||
       c.children !== undefined ||
+      c.minChildren !== undefined ||
       c.attr !== undefined ||
       c.text !== undefined ||
       c.contains !== undefined;
@@ -223,6 +225,7 @@
     if (c.absent) return el === null;
     if (!el) return false;
     if (c.children !== undefined && el.childElementCount !== c.children) return false;
+    if (c.minChildren !== undefined && el.childElementCount < c.minChildren) return false;
     if (c.attr !== undefined && el.getAttribute(c.attr[0]) !== c.attr[1]) return false;
     if (c.text !== undefined && norm(el.textContent) !== c.text) return false;
     if (c.contains !== undefined && !norm(el.textContent).includes(c.contains)) return false;

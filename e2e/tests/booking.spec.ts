@@ -95,6 +95,66 @@ test.describe('booking screen (Buchen)', () => {
     await expect(currentPerson(page)).toHaveAttribute('data-state', 'empty');
   });
 
+  test('at app start the remembered person is shown and booked for while the person list still loads', { tag: '@regression' }, async ({
+    page,
+    data,
+  }) => {
+    const user = await data.user();
+    const {
+      offerings: [cola],
+    } = await data.catalog([{ label: 'Cola', priceCents: 250 }]);
+    const person = await data.person();
+    await signIn(page, user);
+    await pickPerson(page, person);
+
+    // the person list (thousands of persons on a bar Wi-Fi) is held back until the end of the test;
+    // the remembered person's own small request answers after a moment
+    let releaseList = () => {};
+    const listHeld = new Promise<void>((resolve) => {
+      releaseList = resolve;
+    });
+    const LIST = /\/api\/collections\/persons\/records\?/;
+    const ONE = /\/api\/collections\/persons\/records\/[^/?]+$/;
+    await page.route(LIST, async (route) => {
+      await listHeld;
+      await route.continue().catch(() => undefined);
+    });
+    await page.route(ONE, async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 800));
+      await route.continue();
+    });
+    try {
+      await reloadPage(page);
+      // never "Keine Person ausgewählt" for a selected person – and no tap may open the picker meanwhile
+      await expect(currentPerson(page)).toHaveAttribute('data-state', 'loading');
+      await expect(currentPerson(page)).toContainText('Person wird geladen …');
+      await expect(offeringTile(page, cola!.name)).toBeDisabled();
+
+      await expect(currentPerson(page)).toHaveAttribute('data-person-number', person.number);
+      await expect(page.getByTestId('current-person-name')).toHaveText(person.name);
+      await bookTile(page, cola!, 250);
+      await expectPersonTotal(page, 250, 1);
+      expect(await data.bookingsOf(person)).toHaveLength(1);
+    } finally {
+      releaseList();
+      await page.unrouteAll({ behavior: 'ignoreErrors' });
+    }
+  });
+
+  test('a remembered person deleted meanwhile is dropped at app start', async ({ page, data }) => {
+    const user = await data.user();
+    await data.catalog([{ label: 'Cola', priceCents: 250 }]);
+    const person = await data.person();
+    await signIn(page, user);
+    await pickPerson(page, person);
+
+    await data.admin.collection('persons').delete(person.id);
+    await reloadPage(page);
+    await expect(currentPerson(page)).toHaveAttribute('data-state', 'empty');
+    await expect(currentPerson(page)).toContainText('Keine Person ausgewählt');
+    await expect.poll(() => page.evaluate((key) => localStorage.getItem(key), SELECTED_PERSON_KEY)).toBeNull();
+  });
+
   test('a new person can be created from the picker', async ({ page, data }) => {
     const user = await data.user();
     const number = data.id('n');

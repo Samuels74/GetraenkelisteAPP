@@ -1,4 +1,6 @@
 # Podman Quadlet unit: runs Getränkeliste as a systemd *user* service.
+# Requires Podman ≥ 5.0 (`Notify=healthy` below); with Podman 4.x remove that
+# line – the service then counts as started as soon as the container runs.
 #
 # Install (as the user that owns the image, e.g. after `make build`):
 #   mkdir -p ~/.config/containers/systemd
@@ -20,8 +22,10 @@
 # Cold volume export: stop the service first with
 #   systemctl --user stop getraenkeliste
 # (not `podman stop` – Restart=always would start it again right away), then
-#   podman volume export getraenkeliste-data -o getraenkeliste-data.tar
+#   podman volume export getraenkeliste-data -o getraenkeliste-backup.tar
 #   systemctl --user start getraenkeliste
+# Restore: README.md, "Operation". With PB_ENCRYPTION_KEY set, the volume and its
+# backups only start with that same key – keep it with the off-site backups.
 
 [Unit]
 Description=Getränkeliste (PocketBase + web app)
@@ -33,13 +37,22 @@ ContainerName=getraenkeliste
 Image=localhost/getraenkeliste:latest
 # Named volume with the database, uploaded files and backups.
 Volume=getraenkeliste-data:/pb_data
-# Plain HTTP; TLS is terminated by the reverse proxy (deploy/reverse-proxy.md).
-# If the proxy runs on this host (not in a container), prefer binding to
-# loopback only: PublishPort=127.0.0.1:8090:8090
-PublishPort=8090:8090
-# Optional: superuser for the PocketBase dashboard (/_/), upserted at start,
-# and a 32 character key that encrypts the stored settings. Put secrets into an
-# env file (chmod 600) instead of this unit:
+# Plain HTTP for the reverse proxy on this host, which terminates TLS
+# (deploy/reverse-proxy.md; a proxy in a container: see there). Only for a
+# proxy on another machine publish on all interfaces instead – and firewall the
+# port, nothing but the proxy may reach it:
+#PublishPort=8090:8090
+PublishPort=127.0.0.1:8090:8090
+# Hardened like compose.yaml: read-only root filesystem (Podman mounts a tmpfs
+# on /tmp), no Linux capabilities, no privilege escalation.
+ReadOnly=true
+DropCapability=all
+NoNewPrivileges=true
+# Optional: superuser for the PocketBase dashboard (/_/), upserted at start
+# (a changed e-mail adds a superuser – README.md, "Operation"), and a key of
+# exactly 32 characters that encrypts the stored settings (`openssl rand -hex 16`).
+# Put secrets into an env file (chmod 600) instead of this unit – one VAR=value
+# per line, without quotes (Podman keeps quotes as part of the value):
 #   PB_SUPERUSER_EMAIL=ops@example.com
 #   PB_SUPERUSER_PASSWORD=...
 #   PB_ENCRYPTION_KEY=...

@@ -11,11 +11,12 @@
  * Deleting is only possible for directories this package created itself:
  * createOwnedDir() writes a marker file, removeOwnedDir() refuses directories
  * without it. Both also require an allowed location (below the OS temp dir or
- * below <repo>/.pb, never the repository's sources) – compared on real paths,
- * so a symlinked ancestor cannot smuggle a source directory in.
+ * below <repo>/.pb – also when .pb is a symlink to another disk –, never the
+ * repository's sources) – compared on real paths, so a symlinked ancestor
+ * cannot smuggle a source directory in.
  */
 import { existsSync, realpathSync } from 'node:fs';
-import { lstat, mkdir, readdir, readlink, rm, writeFile } from 'node:fs/promises';
+import { cp, lstat, mkdir, mkdtemp, readdir, readlink, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -107,9 +108,10 @@ function isStrictlyInside(inner: string, outer: string): boolean {
 
 /**
  * Throws unless the load test may create and later delete `dir`:
- * - below the OS temp dir or below <repo>/.pb – never one of these roots;
- *   inside the repository only below <repo>/.pb (also when the checkout itself
- *   lives in the temp dir),
+ * - below <repo>/.pb, wherever .pb resolves to (a symlink to another disk is
+ *   fine – unless it resolves to the repository or one of its parents), or
+ *   below the OS temp dir but outside the repository (also when the checkout
+ *   itself lives in the temp dir) – never one of these roots,
  * - not overlapping backend/pb_hooks, loadtest/support or `protect` (e.g. the
  *   instance's app hooks, migrations, SPA build, data dir) in either direction,
  * - not containing the repository.
@@ -117,13 +119,13 @@ function isStrictlyInside(inner: string, outer: string): boolean {
 export function assertDisposableLocation(dir: string, protect: readonly string[] = []): void {
   const target = realPath(dir);
   const repo = realPath(REPO_ROOT);
-  const allowed = isSameOrInside(target, repo)
-    ? isStrictlyInside(target, realPath(PB_HOME))
-    : isStrictlyInside(target, realPath(os.tmpdir()));
-  if (!allowed) {
+  const pbHome = realPath(PB_HOME);
+  const inPbHome = !isSameOrInside(repo, pbHome) && isStrictlyInside(target, pbHome);
+  const inTemp = !isSameOrInside(target, repo) && isStrictlyInside(target, realPath(os.tmpdir()));
+  if (!inPbHome && !inTemp) {
     throw new Error(
-      `refusing to create or delete ${dir}: the load test only manages directories below ` +
-        `${os.tmpdir()} or ${PB_HOME}`,
+      `refusing to create or delete ${dir}: the load test only manages directories below ${PB_HOME}` +
+        `${pbHome !== PB_HOME ? ` (= ${pbHome})` : ''} or below ${os.tmpdir()} outside the repository`,
     );
   }
   if (isSameOrInside(repo, target)) throw new Error(`refusing to create or delete ${dir}: it contains the repository`);
@@ -194,4 +196,22 @@ export async function removeOwnedDir(
     throw new Error(`refusing to delete ${dir}: it was not created by the load test (no ${OWNED_DIR_MARKER} file)`);
   }
   await rm(dir, { recursive: true, force: true });
+}
+
+/**
+ * Copies an SPA build into `<root>/dist`, where `root` is an owned directory –
+ * a fresh one in the OS temp dir, or `root` (recreated). The instance serves
+ * the copy, so a rebuild of frontend/dist (`make loadtest` runs `vite build`
+ * with emptyOutDir) cannot pull files away from it or from the browsers that
+ * have it open. Remove `root` with removeOwnedDir() when done (a fixed `root`
+ * may also be kept and is replaced on the next call).
+ */
+export async function snapshotSpa(source: string, root?: string): Promise<{ root: string; publicDir: string }> {
+  if (!existsSync(path.join(source, 'index.html'))) throw new Error(`no SPA build in ${source} (run: cd frontend && npm run build)`);
+  const dir = root ?? (await mkdtemp(path.join(os.tmpdir(), 'getraenkeliste-loadtest-spa-')));
+  if (root) await removeOwnedDir(root, { protect: [source] });
+  await createOwnedDir(dir, { protect: [source] });
+  const publicDir = path.join(dir, 'dist');
+  await cp(source, publicDir, { recursive: true });
+  return { root: dir, publicDir };
 }

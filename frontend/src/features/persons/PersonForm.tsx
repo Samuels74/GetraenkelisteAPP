@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
 import { useCreatePerson, useUpdatePerson, type PersonInput } from '../../api/mutations';
 import { usePersons } from '../../api/queries';
 import { Button } from '../../components/ui/Button';
@@ -19,6 +19,22 @@ interface PersonFormProps {
 
 type Errors = Partial<Record<'number' | 'name' | 'nickname', string>>;
 
+/**
+ * Enter in a field that is not the last one moves on to `next` (phones label
+ * that key "Weiter"): only the last field and the button submit – Enter in
+ * "Nummer" created persons with nothing but a number.
+ */
+function moveOnEnter(next: string) {
+  return (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key !== 'Enter' || event.nativeEvent.isComposing) return;
+    if (event.shiftKey || event.ctrlKey || event.metaKey || event.altKey) return;
+    const field = event.currentTarget.form?.elements.namedItem(next);
+    if (!(field instanceof HTMLInputElement)) return;
+    event.preventDefault();
+    field.focus();
+  };
+}
+
 export function PersonForm({ person, initialNumber = '', submitLabel, onSaved, onCancel }: PersonFormProps) {
   const persons = usePersons();
   const createPerson = useCreatePerson();
@@ -36,6 +52,17 @@ export function PersonForm({ person, initialNumber = '', submitLabel, onSaved, o
   const [errors, setErrors] = useState<Errors>({});
   const [formError, setFormError] = useState<string | null>(null);
   const busy = createPerson.isPending || updatePerson.isPending;
+
+  // The form is gone when its dialog was closed while saving. A request that
+  // was sent cannot be recalled – the person is saved and the lists show it –
+  // but a late result must not navigate, toast or select anything any more.
+  const mounted = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
 
   function validate(input: { number: string; name: string; nickname: string }): Errors {
     const result: Errors = {};
@@ -68,8 +95,9 @@ export function PersonForm({ person, initialNumber = '', submitLabel, onSaved, o
       } else {
         saved = await createPerson.mutateAsync(input);
       }
-      onSaved(saved);
+      if (mounted.current) onSaved(saved);
     } catch (error) {
+      if (!mounted.current) return;
       const info = describeError(error, 'persons');
       const known = (['number', 'name', 'nickname'] as const).filter((f) => info.fieldErrors[f]);
       setErrors(Object.fromEntries(known.map((f) => [f, info.fieldErrors[f]])));
@@ -84,6 +112,7 @@ export function PersonForm({ person, initialNumber = '', submitLabel, onSaved, o
         name="number"
         value={number}
         onChange={(e) => setNumber(e.target.value)}
+        onKeyDown={moveOnEnter('name')}
         error={errors.number}
         hint="Wird im QR-Code gespeichert, z. B. 001"
         autoComplete="off"
@@ -100,6 +129,7 @@ export function PersonForm({ person, initialNumber = '', submitLabel, onSaved, o
         name="name"
         value={name}
         onChange={(e) => setName(e.target.value)}
+        onKeyDown={moveOnEnter('nickname')}
         error={errors.name}
         autoComplete="off"
         maxLength={100}

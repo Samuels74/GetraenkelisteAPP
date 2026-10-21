@@ -3,7 +3,9 @@
  *
  * Environment:
  *   BASE_URL            test an already running instance instead of starting PocketBase
- *   E2E_PORT            port of the throw-away PocketBase (default 18181)
+ *   E2E_PORT            port of the throw-away PocketBase (default 18181); also names the
+ *                       run's fake-camera directory, so concurrent runs on one machine –
+ *                       also with BASE_URL – need distinct values
  *   E2E_WORKERS         number of parallel workers
  *   E2E_ADMIN_USERNAME / E2E_ADMIN_PASSWORD
  *                       bootstrap admin used to create test data through the API
@@ -43,8 +45,10 @@ export const BOOTSTRAP_ADMIN = {
  * Fake camera videos (Chromium `--use-file-for-fake-video-capture`), written by
  * the global setup. The QR videos exist once per parallel worker slot, each with
  * its own person number, so parallel scan tests never see each other's persons.
+ * One directory per E2E_PORT: the global setup and teardown delete it, so two
+ * runs at the same time (which need different ports anyway) must not share it.
  */
-export const CAMERA_DIR = path.join(os.tmpdir(), 'getraenkeliste-e2e-camera');
+export const CAMERA_DIR = path.join(os.tmpdir(), `getraenkeliste-e2e-camera-${PORT}`);
 
 /** JSON `{ known: string[], unknown: string[] }`: the numbers per parallel index. */
 export const CAMERA_CODES_FILE = path.join(CAMERA_DIR, 'codes.json');

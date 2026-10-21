@@ -9,7 +9,10 @@
  *   persons   POST /api/collections/persons/records as `admin` (like the SPA)
  *   bookings  POST /api/collections/bookings/records as the planned user, with
  *             the SPA's request shape (createdBy + expand), `concurrency`
- *             requests in flight, in the plan's shuffled order
+ *             requests in flight, in the chronological order of the planned
+ *             timestamps (dataset.ts creationOrder – production stores rows
+ *             in `created` order; in-flight creates may land slightly out of
+ *             order)
  *   backdate  POST /api/loadtest/backdate-bookings (superuser, batches)
  *   verify    read back + checks
  * The create steps report throughput and request latencies ("write path
@@ -42,6 +45,7 @@ import {
 } from './api.ts';
 import {
   buildDataset,
+  creationOrder,
   DEFAULT_PASSWORD,
   resolveTimestamps,
   timestampWindow,
@@ -155,8 +159,14 @@ export interface SeedSummary {
     foundOnServer: number;
   };
   checks: CheckResult[];
+  /**
+   * The order the bookings were created in: chronological by their planned
+   * timestamps (since 2026-10-20; before, a seeded shuffle – plan
+   * fingerprints of earlier seeds differ for that reason).
+   */
+  creationOrder: 'chronological';
   fingerprints: {
-    /** sha256 of the dataset plan (options, persons, users, bookings incl. order and times). */
+    /** sha256 of the dataset plan (options, persons, users, bookings with their local times; generation order). */
     plan: string;
     /** sha256 of the read-back content without ids/timestamps (verify only). */
     content?: string;
@@ -581,7 +591,10 @@ export async function runSeed(options: SeedOptions): Promise<SeedResult> {
   );
 
   // --------------------------------------------------------------- bookings
-  const bookingsStep = await createAll('bookings', dataset.bookings, {
+  // chronological creation order: the table's row order then follows the (backdated) `created`, as in production
+  const planned = resolveTimestamps(dataset, anchorMs);
+  const ordered = creationOrder(dataset, planned);
+  const bookingsStep = await createAll('bookings', ordered, {
     concurrency: opts.concurrency,
     errors,
     log,
@@ -606,13 +619,13 @@ export async function runSeed(options: SeedOptions): Promise<SeedResult> {
     findCreated: async (positions, known) => {
       const groups = new Map<string, number[]>();
       for (const position of positions) {
-        const booking = dataset.bookings[position]!;
+        const booking = ordered[position]!;
         const key = `${booking.person}|${booking.offering}|${booking.user}`;
         groups.set(key, [...(groups.get(key) ?? []), position]);
       }
       const found = new Map<number, string>();
       for (const group of groups.values()) {
-        const booking = dataset.bookings[group[0]!]!;
+        const booking = ordered[group[0]!]!;
         const records = await superuser.collection('bookings').getFullList({
           batch: 1000,
           fields: 'id',
@@ -631,7 +644,11 @@ export async function runSeed(options: SeedOptions): Promise<SeedResult> {
       return found;
     },
   });
-  const bookingIds = bookingsStep.ids;
+  // record ids by plan index (`seq`)
+  const bookingIds = new Array<string | undefined>(dataset.bookings.length);
+  ordered.forEach((booking, position) => {
+    bookingIds[booking.seq] = bookingsStep.ids[position];
+  });
   const bookings = createStepResult(bookingsStep);
   checks.push(
     serverCountCheck(
@@ -657,10 +674,10 @@ export async function runSeed(options: SeedOptions): Promise<SeedResult> {
   let timestamps: number[] | undefined;
   let backdate = simpleStep(0, 0, { requests: 0 });
   if (opts.backdate) {
-    timestamps = resolveTimestamps(dataset, anchorMs);
-    const items = dataset.bookings
+    timestamps = planned;
+    const items = ordered
       .filter((booking) => bookingIds[booking.seq] !== undefined)
-      .map((booking) => ({ id: bookingIds[booking.seq] as string, created: toPbDate(timestamps![booking.seq]!) }));
+      .map((booking) => ({ id: bookingIds[booking.seq] as string, created: toPbDate(planned[booking.seq]!) }));
     const backdateStart = now();
     let requests = 0;
     for (let i = 0; i < items.length; i += opts.backdateBatchSize) {
@@ -780,6 +797,7 @@ export async function runSeed(options: SeedOptions): Promise<SeedResult> {
       foundOnServer: errors.foundOnServer,
     },
     checks,
+    creationOrder: 'chronological',
     fingerprints: { plan: dataset.fingerprint, content: contentFingerprint },
   };
   return { summary, dataset, content };

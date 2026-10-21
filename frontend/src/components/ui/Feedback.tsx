@@ -7,12 +7,15 @@ import { cn } from './cn';
 export function EmptyState({
   icon,
   title,
+  titleAs: Title = 'p',
   children,
   action,
   className,
 }: {
   icon?: ReactNode;
   title: string;
+  /** `h1` where the empty state is the whole page (404, "Person nicht gefunden"). */
+  titleAs?: 'p' | 'h1' | 'h2';
   children?: ReactNode;
   action?: ReactNode;
   className?: string;
@@ -20,7 +23,7 @@ export function EmptyState({
   return (
     <div className={cn('flex flex-col items-center gap-3 px-6 py-10 text-center', className)}>
       {icon ? <div className="rounded-2xl bg-primary-soft p-3 text-on-primary-soft">{icon}</div> : null}
-      <p className="text-lg font-semibold">{title}</p>
+      <Title className="text-lg font-semibold">{title}</Title>
       {children ? <div className="max-w-sm text-base text-muted">{children}</div> : null}
       {action}
     </div>
@@ -74,12 +77,15 @@ export function Card({ children, className }: { children: ReactNode; className?:
   return <div className={cn('rounded-2xl border border-line bg-surface shadow-sm', className)}>{children}</div>;
 }
 
-/** Person number chip, e.g. `001`. */
+/**
+ * Person number chip, e.g. `001`. Long numbers (up to 20 characters) wrap
+ * instead of pushing the rest of a row out of it.
+ */
 export function NumberBadge({ number, size = 'md', className }: { number: string; size?: 'md' | 'lg'; className?: string }) {
   return (
     <span
       className={cn(
-        'inline-flex shrink-0 items-center justify-center rounded-xl bg-primary-soft font-bold tabular-nums text-on-primary-soft',
+        'inline-flex max-w-[45%] shrink-0 items-center justify-center rounded-xl bg-primary-soft font-bold tabular-nums wrap-anywhere text-on-primary-soft',
         size === 'lg' ? 'min-w-16 px-3 py-2 text-2xl' : 'min-w-12 px-2 py-1.5 text-base',
         className,
       )}

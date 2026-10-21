@@ -3,25 +3,25 @@
  *
  * The SPA's algorithm (api/keyset.ts + queries.ts fetchAllBookings): pages of
  * 500 with the booking expand, keyset pagination over (created, id) –
- * `(created < c || (created = c && id < i))` – sequential, until a page is
- * shorter than 500. Measured alone (3 runs, median; quick: 1) and once more
- * while a bar rush (A2's device mix, 2 bookings/s) is running.
+ * `created <= c && (created < c || (created = c && id < i))` – sequential,
+ * until a page is shorter than 500. Measured alone (3 runs, median; quick: 1)
+ * and once more while a bar rush (A2's device mix, 2 bookings/s) is running.
  *
- * Diagnosis (1B §4.4): PocketBase binds the two `c` literals as separate
- * parameters, so SQLite cannot use them as one range – it collects and sorts
- * every older row for every page (MULTI-INDEX OR + TEMP B-TREE), which makes
- * the export O(n²) in the number of bookings. For comparison the same export
- * runs with an index-friendly but equivalent filter
- * `created <= c && (created < c || (created = c && id < i))` (not what the
- * app sends; the fix 1B proposed). From the per-page costs a projection
- * estimates the export time at 10× the bookings (≈ 1.5 years at the seeded
- * rate).
+ * Before the F3 fix the SPA sent the cursor condition without `created <= c`.
+ * PocketBase binds every literal as a separate parameter, so SQLite could not
+ * use the two `c` as one range: it collected and sorted every older row for
+ * every page (MULTI-INDEX OR + TEMP B-TREE) – O(n²) in the number of
+ * bookings. The redundant `created <= c` gives it a range scan on the created
+ * index. For comparison the export also runs once with the pre-fix filter
+ * (legacyKeysetFilter – not what the app sends any more). From the per-page
+ * costs a projection estimates the export time at 10× the bookings (≈ 1.5
+ * years at the seeded rate).
  */
 import { latencyStats } from '../../stats.ts';
 import { describeLatency } from '../analysis.ts';
 import { runFleet } from '../fleet.ts';
 import { HttpClient, parseJson } from '../http.ts';
-import { CSV_PAGE_SIZE, keysetFilter, paths, pbQuote, type KeysetCursor } from '../requests.ts';
+import { CSV_PAGE_SIZE, keysetFilter, legacyKeysetFilter, paths } from '../requests.ts';
 import { fmt, median, runScenario, sleep, type PerfContext } from '../scenario.ts';
 import type { ScenarioResult } from '../types.ts';
 import { rushPlan } from './a02-rush.ts';
@@ -43,27 +43,16 @@ interface ExportRun {
   errors: string[];
 }
 
-/** The index-friendly equivalent of keysetFilter (for the comparison only). */
-function rangeKeysetFilter(baseFilter: string, cursor: KeysetCursor | null): string {
-  const parts: string[] = [];
-  if (baseFilter) parts.push(`(${baseFilter})`);
-  if (cursor) {
-    const created = pbQuote(cursor.created);
-    parts.push(`created <= ${created} && (created < ${created} || (created = ${created} && id < ${pbQuote(cursor.id)}))`);
-  }
-  return parts.join(' && ');
-}
-
 /** fetchAllKeyset as the SPA runs it; `total` = expected rows (for the "older rows" estimate). */
 async function exportAll(client: HttpClient, total: number, filter: typeof keysetFilter): Promise<ExportRun> {
   const t0 = performance.now();
   const seen = new Set<string>();
   const pages: PageSample[] = [];
   const errors: string[] = [];
-  let cursor: KeysetCursor | null = null;
+  let cursor: { created: string; id: string } | null = null;
   let bytes = 0;
   for (let index = 1; ; index++) {
-    const result = await client.get(paths.bookings(filter('', cursor), 1, CSV_PAGE_SIZE), { collect: true });
+    const result = await client.get(paths.bookings(filter('', cursor), CSV_PAGE_SIZE), { collect: true });
     bytes += result.bytes;
     if (result.error) {
       errors.push(result.error);
@@ -79,9 +68,14 @@ async function exportAll(client: HttpClient, total: number, filter: typeof keyse
   return { totalMs: performance.now() - t0, pages, rows: seen.size, bytes, errors };
 }
 
-/** Least-squares line ms = a + b · older over the keyset pages (index ≥ 2). */
+/**
+ * Least-squares line ms = a + b · older over the full keyset pages (index ≥ 2,
+ * 500 rows): the final, partial page is cheaper because it returns fewer
+ * rows, not because fewer rows are older – with a flat page cost it alone
+ * would fake a slope.
+ */
 function fitPageCost(pages: readonly PageSample[]): { a: number; b: number } {
-  const points = pages.filter((p) => p.index >= 2);
+  const points = pages.filter((p) => p.index >= 2 && p.rows === CSV_PAGE_SIZE);
   const n = points.length;
   if (n < 2) return { a: points[0]?.ms ?? 0, b: 0 };
   const mx = points.reduce((s, p) => s + p.older, 0) / n;
@@ -119,7 +113,7 @@ export async function scenarioA5(ctx: PerfContext): Promise<ScenarioResult[]> {
         const window = rec.window();
         const alone: ExportRun[] = [];
         for (let i = 0; i < (ctx.quick ? 1 : 3); i++) alone.push(await exportAll(client, total, keysetFilter));
-        const reference = await exportAll(client, total, rangeKeysetFilter);
+        const reference = await exportAll(client, total, legacyKeysetFilter);
         window.stop();
         const totals = alone.map((run) => run.totalMs);
         const medianTotal = median(totals);
@@ -144,7 +138,7 @@ export async function scenarioA5(ctx: PerfContext): Promise<ScenarioResult[]> {
           label: 'keyset page (500 rows) – p95',
           value: pageStats.count ? pageStats.p95 : null,
           unit: 'ms',
-          budget: { direction: 'max', warn: 100, rationale: 'one page of 500 rows with expand; baseline ≈ 45 ms (keyset) / 18 ms (first page)' },
+          budget: { direction: 'max', warn: 100, rationale: 'one page of 500 rows with expand; baseline ≈ 45 ms (keyset, before the F3 fix) / 18 ms (first page)' },
           detail: `${describeLatency(pageStats)}; first page (no keyset) ${fmt(firstPage)} ms`,
         });
         rec.add({
@@ -166,16 +160,16 @@ export async function scenarioA5(ctx: PerfContext): Promise<ScenarioResult[]> {
           detail: errors.slice(0, 3).join('; ') || 'no errors',
         });
 
-        // diagnosis: O(n²) – the keyset pages sort every older row
+        // diagnosis: does the page cost grow with the number of older rows (O(n²) in total)?
         const cost = fitPageCost(run0.pages);
         const projected10x = project(total * 10, firstPage, cost);
         const referenceMs = reference.totalMs;
         rec.info(
           'export.reference.total',
-          'same export with an index-friendly keyset filter (comparison, not the app)',
+          'same export with the keyset filter before the F3 fix (comparison, not the app)',
           Math.round(referenceMs) / 1000,
           's',
-          `the app's export takes ${fmt(medianTotal / referenceMs, 2)}× as long; filter created <= c && (created < c || (created = c && id < i))`,
+          `the pre-fix filter (created < c || (created = c && id < i)) takes ${fmt(referenceMs / medianTotal, 2)}× as long as the app's export`,
         );
         rec.add({
           key: 'export.projected10x',
@@ -193,19 +187,20 @@ export async function scenarioA5(ctx: PerfContext): Promise<ScenarioResult[]> {
           )} s`,
           explain: (verdict) =>
             verdict === 'warn'
-              ? 'every keyset page sorts all older bookings again (bound parameters prevent the range scan: frontend/src/api/keyset.ts:18-26 with ' +
-                'PocketBase\'s parameter binding), so the export time grows with the square of the history'
+              ? 'the keyset pages get slower the more older bookings remain (b > 0: SQLite sorts older rows per page instead of a range scan – ' +
+                'check the plan of the keyset page in A1-planner and frontend/src/api/keyset.ts), so the export time grows with the square of the history'
               : undefined,
         });
         rec.table('Page time vs. page index (first export run)', {
-          columns: ['page', 'ms', 'rows', 'older rows (≈ sorted per page)'],
+          columns: ['page', 'ms', 'rows', 'older rows (sorted per page before the F3 fix)'],
           rows: run0.pages
             .filter((p, i, all) => i < 3 || i === all.length - 1 || p.index % 5 === 0)
             .map((p) => [p.index, Math.round(p.ms * 10) / 10, p.rows, p.older]),
         });
         rec.note(
-          `Page 1 (no cursor) takes ${fmt(firstPage)} ms, keyset pages ${fmt(pageStats.p50)} ms (p50) – the cost falls with the page index ` +
-            'because fewer older rows remain to be sorted; the sum over all pages is quadratic in the number of bookings.',
+          `Page 1 (no cursor) takes ${fmt(firstPage)} ms, keyset pages ${fmt(pageStats.p50)} ms (p50); the fitted cost per older row is ` +
+            `${fmt(cost.b * 1000, 2)} µs – near 0 means every page costs the same (a range scan) and the export grows linearly. Before the F3 fix ` +
+            'each page sorted all older rows (≈ 2 µs per row): the cost fell with the page index and the sum was quadratic.',
         );
         rec.note(
           `The download grows linearly: ${fmt(run0.bytes / run0.rows / 1024, 2)} KiB per booking, so 10× the history would be ` +

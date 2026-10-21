@@ -1,4 +1,5 @@
 import { expect, test } from '../support/fixtures';
+import { subscribeOnly } from '../support/realtime';
 import {
   forcePasswordScreen,
   loginViaUi,
@@ -47,7 +48,7 @@ test.describe('user administration (Verwaltung › Benutzer)', () => {
     await form.getByLabel('Neues Passwort', { exact: true }).fill(initialPassword);
     await form.getByLabel('Neues Passwort wiederholen').fill(initialPassword);
     await form.getByRole('button', { name: 'Passwort speichern' }).click();
-    await expect(form.getByText('Das neue Passwort muss sich vom aktuellen unterscheiden.')).toBeVisible();
+    await expect(form.getByText('Das neue Passwort muss sich vom bisherigen unterscheiden.')).toBeVisible();
 
     await setForcedPassword(page, newPassword);
     await expect(page.getByRole('heading', { level: 1, name: 'Buchungen' })).toBeVisible();
@@ -159,10 +160,18 @@ test.describe('user administration (Verwaltung › Benutzer)', () => {
     await expect(phone.getByTestId('offering-row').first()).toBeVisible();
   });
 
-  test('disabling a user ends the open session and blocks the login', async ({ page, data, openAs }) => {
+  test('disabling a user ends the open session and blocks the login', { tag: '@regression' }, async ({
+    page,
+    data,
+    openPage,
+  }) => {
     const admin = await data.user({ role: 'admin' });
     const user = await data.user();
-    const phone = await openAs(user, '/buchungen');
+    const phone = await openPage();
+    await phone.clock.install(); // the time flows; the test lets a minute pass at once
+    // no events: a refetch caused by a parallel test would meet the revoked token (→ login) before the minute is up
+    await subscribeOnly(phone, []);
+    await signIn(phone, user, '/buchungen');
     await expect(phone.getByTestId('bookings-count')).toHaveText(/^\d+$/);
 
     await signIn(page, admin, '/verwaltung/benutzer');
@@ -173,14 +182,14 @@ test.describe('user administration (Verwaltung › Benutzer)', () => {
     await expect(dialog).toBeHidden();
     await expect(userRow(page, user.username)).toContainText('Deaktiviert');
 
-    // The user's app ends the session: right away (realtime update of the own
-    // record) or with the next request (the token was revoked → 401).
-    await expect(async () => {
-      if (!new URL(phone.url()).pathname.startsWith('/login')) {
-        await phone.getByTestId('nav-personen').click({ timeout: 2_000 });
-      }
-      await expect(phone).toHaveURL(/\/login$/, { timeout: 2_000 });
-    }).toPass({ timeout: 20_000 });
+    // Disabling revokes the token, and PocketBase then drops the realtime
+    // connection's auth before it announces the change: no event reaches the
+    // idle phone. Its session check – every minute while visible – ends the
+    // session, without anybody touching the phone.
+    await expect(phone).toHaveURL(/\/buchungen/);
+    await phone.clock.fastForward(61_000);
+    await expect(phone).toHaveURL(/\/login$/);
+    await expect(phone.getByText('Deine Sitzung ist abgelaufen. Bitte melde dich erneut an.')).toBeVisible();
     await loginViaUi(phone, user.username, user.password);
     await expect(phone.getByRole('form', { name: 'Anmelden' }).getByRole('alert')).toHaveText(
       'Dieses Konto ist deaktiviert. Bitte wende dich an die Verwaltung.',

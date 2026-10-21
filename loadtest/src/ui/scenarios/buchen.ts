@@ -88,7 +88,7 @@ export const U1: UiScenario = {
     r.addSamples('ready.cold', 'Cold start → person card with total, latest bookings and tiles painted', cold, uiBudget('U1.ready', v.profile));
     r.addSamples('ready.warm', 'Reload with cached JS/CSS → ready', warm);
     r.addSamples('tiles.cold', 'Cold start → offering tiles painted', tiles);
-    r.add({ key: 'requests', label: 'API requests of a start', value: median(requests), unit: 'count', detail: `${kinds} (Phase 1B: 11)` });
+    r.add({ key: 'requests', label: 'API requests of a start', value: median(requests), unit: 'count', detail: `${kinds} (before the fixes: 11)` });
     r.add({ key: 'transfer.cold', label: 'Transferred on a cold start (JS/CSS + API)', value: median(kibCold), unit: 'KiB' });
     r.add({ key: 'transfer.warm', label: 'Transferred on a reload (API only)', value: median(kibWarm), unit: 'KiB' });
     r.add({ key: 'longTasks', label: 'Long tasks until ready (sum)', value: median(longTasks), unit: 'ms' });
@@ -96,7 +96,9 @@ export const U1: UiScenario = {
     const persons = median(kibPersons) ?? 0;
     r.note(
       `Every start downloads the whole person list (${env.fixtures.persons.length} persons, ${Math.round(persons)} KiB in ` +
-        'PERS requests) for the picker, although the screen shows one person – on a slow network this dominates the start (see U11).',
+        'PERS requests) for the picker, although the screen shows one person – on a slow network this dominates the start (see U11; a ' +
+        'compressing reverse proxy shrinks it ≈ 7.5×). Since the fixes it is not loaded again when a screen mounts (while realtime is ' +
+        'connected nothing goes stale by time).',
     );
   },
 };
@@ -178,7 +180,7 @@ export const U2: UiScenario = {
         label: 'Requests per tap',
         value: median(requests),
         unit: 'count',
-        detail: `${kinds} – the POST plus two refetch rounds (mutation + own realtime echo); Phase 1B: 5`,
+        detail: `${kinds} – the POST plus the person's summary (the recent list is merged from the response, the realtime echo is skipped); before the fixes 5 (two refetch rounds)`,
       });
       r.add({ key: 'undo', label: '"Rückgängig" → total restored', value: undo, unit: 'ms', detail: undoWhy || undefined });
       r.add({

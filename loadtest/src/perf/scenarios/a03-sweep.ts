@@ -8,6 +8,11 @@
  * 10 % undo). The devices are spread over up to 4 worker threads so the load
  * generator does not become the bottleneck.
  *
+ * Propagation is measured on the screens that show a booking – the laptops;
+ * a phone on Buchen shows only its own selected person, so other phones'
+ * bookings need no update there (before the fixes every phone refetched its
+ * totals and recent list on every booking).
+ *
  * The knee is the first level where propagation p95 exceeds twice its value
  * at the smallest level, where the request throughput stops rising (< 10 %
  * more than the previous level), where requests fail or where deliveries go
@@ -202,8 +207,8 @@ export async function scenarioA3(ctx: PerfContext): Promise<ScenarioResult[]> {
           r.requestsPerSecond,
           r.createP95,
           r.propagationP95,
-          r.phoneP95,
-          r.laptopP95,
+          Number.isFinite(r.phoneP95) ? r.phoneP95 : '–',
+          Number.isFinite(r.laptopP95) ? r.laptopP95 : '–',
           r.serverCpu ?? 'n/a',
           r.otherCores ?? 'n/a',
           `${r.clientCpuMax}${r.clientBound ? ' (saturated)' : ''}`,
@@ -213,8 +218,10 @@ export async function scenarioA3(ctx: PerfContext): Promise<ScenarioResult[]> {
       });
       rec.data.levels = rows;
       rec.note(
-        'Each phone refetches at most about once per 120 ms debounce + round trip, so the request rate grows with the number of devices, ' +
-          'not with the booking rate; laptops reload the complete totals (≈ 250 KB, ≈ 45 ms of server CPU) and their list pages per round.',
+        'A booking costs the booking phone 2 requests (create + its person\'s summary) and every laptop 2 small ones per realtime batch ' +
+          '(summary + one head request); phones showing other persons send nothing – "phones p95" stays empty. Before the fixes every phone ' +
+          'refetched its totals and recent list after every booking and every laptop reloaded the complete totals (≈ 250 KB, ≈ 45 ms of server ' +
+          'CPU) plus all its list pages.',
       );
     },
   );

@@ -17,11 +17,44 @@ export function qrMatrix(value: string): QrMatrix {
   };
 }
 
+export interface QrPath {
+  path: string;
+  /** Total size in modules, quiet zone included. */
+  size: number;
+}
+
+/**
+ * Paths of the most recently used codes (least recently used dropped first).
+ * Encoding is the expensive part (≈ 0.1 ms per code, 4× that on a phone) and
+ * a person's code never changes; the print sheet renders one per person
+ * (docs/LOADTEST-FINDINGS.md F4). ≈ 1.6 KB per entry.
+ */
+const PATH_CACHE_SIZE = 2500;
+const pathCache = new Map<string, QrPath>();
+
 /**
  * SVG path for the dark modules (horizontal runs merged), including a quiet
  * zone of `margin` modules. Returns the path and the total size in modules.
+ * Cached per value and margin; the result is shared (frozen).
  */
-export function qrSvgPath(value: string, margin = 4): { path: string; size: number } {
+export function qrSvgPath(value: string, margin = 4): QrPath {
+  const key = `${margin}:${value}`;
+  const cached = pathCache.get(key);
+  if (cached) {
+    pathCache.delete(key); // Map order = recency
+    pathCache.set(key, cached);
+    return cached;
+  }
+  const result = Object.freeze(buildSvgPath(value, margin));
+  pathCache.set(key, result);
+  if (pathCache.size > PATH_CACHE_SIZE) {
+    const oldest = pathCache.keys().next();
+    if (!oldest.done) pathCache.delete(oldest.value);
+  }
+  return result;
+}
+
+function buildSvgPath(value: string, margin: number): QrPath {
   const matrix = qrMatrix(value);
   const parts: string[] = [];
   for (let row = 0; row < matrix.size; row++) {

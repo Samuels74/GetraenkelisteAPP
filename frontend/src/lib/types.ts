@@ -82,12 +82,23 @@ export interface TotalsPerUser {
   totalCents: number;
 }
 
-/** Response of `GET /api/app/totals` (ARCHITECTURE.md §5). */
-export interface Totals {
+/** The parts of `GET /api/app/totals` a screen can ask for (`parts=`, ARCHITECTURE.md §5). */
+export type TotalsPart = 'summary' | 'perPerson' | 'perOffering' | 'perUser';
+
+/** The `summary` part: the top-level count and sums. */
+export interface TotalsSummary {
   count: number;
   quantity: number;
   totalCents: number;
-  perPerson: TotalsPerPerson[];
-  perOffering: TotalsPerOffering[];
-  perUser: TotalsPerUser[];
+}
+
+/**
+ * Response of `GET /api/app/totals` (ARCHITECTURE.md §5). Only the requested
+ * parts are present – a missing key means "not requested / not loaded yet",
+ * never "no bookings" (that is an empty array or a count of 0).
+ */
+export interface Totals extends Partial<TotalsSummary> {
+  perPerson?: TotalsPerPerson[];
+  perOffering?: TotalsPerOffering[];
+  perUser?: TotalsPerUser[];
 }

@@ -5,6 +5,8 @@ declare module "vitest" {
   export interface ProvidedContext {
     pbUrl: string;
     superuser: { email: string; password: string };
+    /** the binary, migrations and app hooks the test instance runs with */
+    pocketbase: { bin: string; migrationsDir: string; hooksDir: string };
   }
 }
 
@@ -19,6 +21,11 @@ export const MESSAGES = {
     "Dieser Benutzer hat bereits Buchungen erfasst und kann nicht gelöscht werden. Deaktiviere das Konto stattdessen.",
   offeringInactive: "Dieses Angebot ist nicht aktiv.",
   ownRoleOrDisabled: "Du kannst deine eigene Rolle nicht ändern und dein eigenes Konto nicht deaktivieren.",
+  ownMustChangePassword:
+    "Du kannst die Pflicht zur Passwortänderung für dein eigenes Konto nicht selbst ändern – sie endet, sobald du dein Passwort änderst.",
+  samePassword: "Das neue Passwort muss sich vom bisherigen unterscheiden.",
+  lastActiveAdmin: "Mindestens ein aktiver Admin muss bleiben.",
+  noLongerAdmin: "Dafür fehlt dir inzwischen die Berechtigung.",
 } as const;
 
 export const DEFAULT_PASSWORD = "password123";
@@ -140,8 +147,14 @@ export interface Totals {
   }>;
 }
 
-export function totals(pb: PocketBase, query: Record<string, string> = {}): Promise<Totals> {
+/** An array value is sent as a repeated parameter (?parts=a&parts=b), like the SDK does. */
+export function totals(pb: PocketBase, query: Record<string, string | string[]> = {}): Promise<Totals> {
   return pb.send<Totals>("/api/app/totals", { query });
+}
+
+/** GET /api/app/totals with ?parts= – only the requested keys are present. */
+export function totalsParts(pb: PocketBase, query: Record<string, string | string[]>): Promise<Partial<Totals>> {
+  return pb.send<Partial<Totals>>("/api/app/totals", { query });
 }
 
 /** PocketBase datetime ("2026-01-31 12:00:00.123Z") -> ISO 8601 ("2026-01-31T12:00:00.123Z"). */
@@ -150,6 +163,28 @@ export function toIso(pbDateTime: string): string {
 }
 
 export const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Runs fn while the given admins are the only enabled ones ("at least one
+ * active admin" tests): every other enabled admin – the seeded one and those
+ * of earlier tests – is disabled through the superuser and enabled again
+ * afterwards. Create users and log in BEFORE: the seeded admin cannot log in
+ * meanwhile, and disabling invalidates its tokens (seededAdmin() logs in anew).
+ */
+export async function withOnlyActiveAdmins(su: PocketBase, keep: string[], fn: () => Promise<void>): Promise<void> {
+  const active = await su.collection("users").getFullList({ filter: 'role = "admin" && disabled = false', fields: "id" });
+  const others = active.map((user) => user.id).filter((id) => !keep.includes(id));
+  try {
+    for (const id of others) {
+      await su.collection("users").update(id, { disabled: true });
+    }
+    await fn();
+  } finally {
+    for (const id of others) {
+      await su.collection("users").update(id, { disabled: false });
+    }
+  }
+}
 
 /** Asserts that the request fails with the given HTTP status (and message). */
 export async function expectApiError(

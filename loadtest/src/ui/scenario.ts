@@ -6,7 +6,7 @@
  */
 import type { Login, ScenarioContext } from '../perf/types.ts';
 import type { OpenOptions, ProfileName, RequestRecord, UiPage } from './browser.ts';
-import { buchenLoad, personenLoad } from './conditions.ts';
+import { buchenLoad, LIST_PAGE_SIZE, personenLoad } from './conditions.ts';
 import { elements, type Conds } from './probe.ts';
 import type { ResultBuilder } from './result.ts';
 import { Rest, type Offering, type Person, type User } from './rest.ts';
@@ -94,11 +94,11 @@ export async function buchenExpect(env: UiEnv, username: string, person: Person)
   return buchenLoad({ offerings: env.fixtures.offerings.length, person, totalCents: totals.totalCents, count: totals.count });
 }
 
-/** Personen with the current totals (the first row that has bookings shows its amount). */
+/** Personen with the current totals (the first rendered row that has bookings shows its amount). */
 export async function personenExpect(env: UiEnv, username: string): Promise<Conds> {
-  const totals = await env.rest.totals(env.login(username).token);
-  const byId = new Map(totals.perPerson.map((entry) => [entry.personId, entry.totalCents]));
-  const first = env.fixtures.persons.find((person) => byId.has(person.id));
+  const totals = await env.rest.totals(env.login(username).token, {}, ['perPerson']);
+  const byId = new Map((totals.perPerson ?? []).map((entry) => [entry.personId, entry.totalCents]));
+  const first = env.fixtures.persons.slice(0, LIST_PAGE_SIZE).find((person) => byId.has(person.id));
   return personenLoad(env.fixtures.persons, first ? { person: first, totalCents: byId.get(first.id) as number } : null);
 }
 

@@ -7,7 +7,7 @@
  */
 import type { Budget } from './types.ts';
 
-/** Small requests (≤ ~10 KB): groups, offerings, users, totals(person), recent, create/delete, refresh. */
+/** Small requests (≤ ~10 KB): groups, offerings, users, one person's totals (card summary, realtime row), recent, create/delete, refresh. */
 export const SMALL_REQUEST: Budget = {
   direction: 'max',
   warn: 25,
@@ -20,7 +20,7 @@ export const LIST_PAGE: Budget = {
   direction: 'max',
   warn: 50,
   fail: 200,
-  rationale: 'p95 of one booking-list page (50 rows + expand, ≈ 64 KB); baseline 2–4 ms, ≈ 15 ms at offset 14,450',
+  rationale: 'p95 of one booking-list page (50 rows + expand, ≈ 64 KB); baseline 2–4 ms (keyset pages at any depth; offset paging before the fixes: ≈ 15 ms at offset 14,450)',
 };
 
 /** The persons list as the SPA loads it: getFullList → 3 sequential pages. */
@@ -31,19 +31,22 @@ export const PERSONS_SEQUENCE: Budget = {
   rationale: 'p95 of the 3 sequential pages (≈ 421 KB) the picker / Personen screen need; baseline ≈ 15 ms',
 };
 
-/** GET /api/app/totals with many rows (all, periods, nur meine). */
+/** GET /api/app/totals aggregating many bookings (per person, periods, nur meine, the admin parts). */
 export const TOTALS_LARGE: Budget = {
   direction: 'max',
   warn: 100,
   fail: 300,
-  rationale: 'p95 of the totals endpoint (4 aggregate queries, ≈ 250 KB for all 2000 persons); baseline ≈ 45–55 ms',
+  rationale:
+    'p95 of a totals request over many bookings; the per-person rows of all 2000 persons ≈ 250 KB and ≈ 25–40 ms, summaries a few ms ' +
+    '(before the fixes every request computed all four parts: ≈ 45–55 ms)',
 };
 
-/** Size of the reference totals (all bookings, all persons). */
+/** Size of the per-person totals of all bookings (one row per person). */
 export const TOTALS_ALL_SIZE: Budget = {
   direction: 'max',
   warn: 400,
-  rationale: 'KiB per totals(all) response – refetched by Personen / Buchungen / admin screens after every booking; baseline 248 KiB',
+  rationale:
+    'KiB of the per-person totals of all bookings – loaded when Personen / "Pro Person" open (before the fixes refetched by every big screen after every booking); baseline ≈ 250 KiB',
 };
 
 /** Booking create / delete under realistic load (from the intended send time). */
@@ -59,7 +62,7 @@ export const PROPAGATION: Budget = {
   direction: 'max',
   warn: 500,
   fail: 1500,
-  rationale: 'p95 booking → refetched on the other devices; baseline ≈ 170 ms (120 ms debounce) – > 1.5 s looks out of sync',
+  rationale: 'p95 booking → shown on the other devices whose screen shows it; baseline ≈ 170 ms (120 ms debounce) – > 1.5 s looks out of sync',
 };
 
 /** Any failed request in a realistic scenario. */

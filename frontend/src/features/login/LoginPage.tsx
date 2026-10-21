@@ -70,6 +70,14 @@ export function LoginPage() {
             enterKeyHint="next"
             value={username}
             onChange={(e) => setUsername(e.target.value)}
+            onKeyDown={(e) => {
+              // Enter ("Weiter" on phones) moves on to an empty password instead of submitting without it.
+              if (e.key !== 'Enter' || e.nativeEvent.isComposing || password) return;
+              const field = e.currentTarget.form?.elements.namedItem('password');
+              if (!(field instanceof HTMLInputElement)) return;
+              e.preventDefault();
+              field.focus();
+            }}
             required
           />
           <TextField

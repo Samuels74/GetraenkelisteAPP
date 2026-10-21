@@ -9,13 +9,14 @@ import { Button } from '../../components/ui/Button';
 import { ConfirmDialog, Dialog } from '../../components/ui/Dialog';
 import { Badge, EmptyState, QueryError } from '../../components/ui/Feedback';
 import { FormError, SelectField, SwitchField, TextField } from '../../components/ui/Field';
+import { formLevelError } from '../../components/ui/formErrors';
 import { PageSpinner } from '../../components/ui/Spinner';
 import { changedFields, isEmptyPatch } from '../../lib/diff';
 import { describeError, errorMessage } from '../../lib/errors';
 import type { Role, UserRecord } from '../../lib/types';
+import { PASSWORD_HINT, passwordLengthError } from '../account/passwordRules';
 
 const USERNAME_PATTERN = /^[a-z0-9._-]+$/;
-const MIN_PASSWORD = 8;
 
 const ROLE_LABELS: Record<Role, string> = { admin: 'Admin', user: 'Benutzer' };
 
@@ -24,27 +25,31 @@ type EditState = { mode: 'create' } | { mode: 'edit'; user: UserRecord };
 export function UsersAdmin() {
   const me = useCurrentUser();
   const users = useUsers();
-  const references = useReferenceTotals();
+  // "has bookings" (delete disabled): only which users booked (parts=perUser)
+  const references = useReferenceTotals({ parts: ['perUser'] });
   const [edit, setEdit] = useState<EditState | null>(null);
   const withBookings = useMemo(
     () => new Set((references.data?.perUser ?? []).map((entry) => entry.userId)),
     [references.data],
   );
 
-  if (users.isPending) return <PageSpinner />;
-  if (users.isError) return <QueryError error={users.error} onRetry={() => void users.refetch()} />;
+  // (a failed background refresh keeps the loaded users)
+  if (!users.data) {
+    return users.isError ? <QueryError error={users.error} onRetry={() => void users.refetch()} /> : <PageSpinner />;
+  }
 
   const editedUser = edit?.mode === 'edit' ? (users.data.find((u) => u.id === edit.user.id) ?? edit.user) : null;
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between gap-3">
-        <p className="text-sm text-muted">Benutzer können buchen und Personen verwalten.</p>
+      {/* the button moves below the text when both do not fit (narrow phones, large text) */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <p className="min-w-0 flex-[1_1_12rem] text-sm text-muted">Benutzer können buchen und Personen verwalten.</p>
         <Button
           variant="primary"
           icon={<UserPlus className="size-5" aria-hidden />}
           onClick={() => setEdit({ mode: 'create' })}
-          className="shrink-0"
+          className="ml-auto shrink-0"
         >
           Neuer Benutzer
         </Button>
@@ -60,7 +65,7 @@ export function UsersAdmin() {
                 type="button"
                 onClick={() => setEdit({ mode: 'edit', user })}
                 aria-label={`${user.username} bearbeiten`}
-                className="flex min-h-16 w-full items-center gap-3 px-4 py-2 text-left transition-colors hover:bg-surface-2"
+                className="flex min-h-16 w-full flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2 text-left transition-colors hover:bg-surface-2"
               >
                 <span
                   aria-hidden
@@ -68,13 +73,14 @@ export function UsersAdmin() {
                 >
                   {(user.name || user.username).slice(0, 1)}
                 </span>
-                <span className="min-w-0 flex-1">
+                {/* the badges move to their own line rather than squeezing the name */}
+                <span className="min-w-0 flex-[1_1_8rem]">
                   <span className={`block truncate font-semibold ${user.disabled ? 'text-muted line-through' : ''}`}>
                     {user.username}
                   </span>
                   {user.name ? <span className="block truncate text-sm text-muted">{user.name}</span> : null}
                 </span>
-                <span className="flex max-w-[45%] flex-wrap justify-end gap-1">
+                <span className="ml-auto flex flex-wrap justify-end gap-1">
                   {user.id === me?.id ? <Badge tone="success">Du</Badge> : null}
                   {user.role === 'admin' ? <Badge tone="primary">Admin</Badge> : null}
                   {user.disabled ? <Badge tone="danger">Deaktiviert</Badge> : null}
@@ -127,7 +133,7 @@ function CreateUserForm({ users, onDone }: { users: UserRecord[]; onDone: () => 
     else if (!USERNAME_PATTERN.test(normalized)) next.username = 'Nur Kleinbuchstaben, Ziffern, „.“, „_“ und „-“ erlaubt.';
     else if (users.some((u) => u.username === normalized)) next.username = 'Dieser Benutzername ist bereits vergeben.';
     if (name.trim().length > 100) next.name = 'Höchstens 100 Zeichen erlaubt.';
-    if (password.length < MIN_PASSWORD) next.password = `Das Passwort muss mindestens ${MIN_PASSWORD} Zeichen lang sein.`;
+    next.password = passwordLengthError(password);
     if (password !== passwordConfirm) next.passwordConfirm = 'Die Passwörter stimmen nicht überein.';
     setErrors(next);
     setFormError(null);
@@ -139,7 +145,8 @@ function CreateUserForm({ users, onDone }: { users: UserRecord[]; onDone: () => 
     } catch (error) {
       const info = describeError(error, 'users');
       setErrors(info.fieldErrors);
-      setFormError(info.message);
+      // (a username taken meanwhile shows under the field, not twice)
+      setFormError(formLevelError(info, ['username', 'name', 'password', 'passwordConfirm', 'role']));
     }
   }
 
@@ -173,7 +180,7 @@ function CreateUserForm({ users, onDone }: { users: UserRecord[]; onDone: () => 
         value={password}
         onChange={(e) => setPassword(e.target.value)}
         error={errors.password}
-        hint="Mindestens 8 Zeichen. Muss beim ersten Login geändert werden."
+        hint={`${PASSWORD_HINT} Muss bei der ersten Anmeldung geändert werden.`}
         autoComplete="new-password"
         required
       />
@@ -252,7 +259,7 @@ function EditUserForm({
     } catch (error) {
       const info = describeError(error, 'users');
       setErrors(info.fieldErrors);
-      setFormError(info.message);
+      setFormError(formLevelError(info, ['name', 'role']));
     }
   }
 
@@ -260,7 +267,7 @@ function EditUserForm({
     event.preventDefault();
     setPasswordFormError(null);
     const next: Record<string, string | undefined> = {};
-    if (password.length < MIN_PASSWORD) next.password = `Das Passwort muss mindestens ${MIN_PASSWORD} Zeichen lang sein.`;
+    next.password = passwordLengthError(password);
     if (password !== passwordConfirm) next.passwordConfirm = 'Die Passwörter stimmen nicht überein.';
     setPasswordErrors(next);
     if (Object.values(next).some(Boolean)) return;
@@ -268,14 +275,14 @@ function EditUserForm({
     try {
       await updateUser.mutateAsync({ id: user.id, input: { password, passwordConfirm } });
       toast.success(`Passwort für ${user.username} gesetzt`, {
-        description: 'Muss beim nächsten Login geändert werden.',
+        description: 'Muss bei der nächsten Anmeldung geändert werden.',
       });
       setPassword('');
       setPasswordConfirm('');
     } catch (error) {
       const info = describeError(error, 'users');
       setPasswordErrors(info.fieldErrors);
-      setPasswordFormError(info.message);
+      setPasswordFormError(formLevelError(info, ['password', 'passwordConfirm']));
     } finally {
       setPasswordBusy(false);
     }
@@ -367,7 +374,7 @@ function EditUserForm({
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             error={passwordErrors.password}
-            hint="Mindestens 8 Zeichen."
+            hint={PASSWORD_HINT}
             autoComplete="new-password"
           />
           <TextField
@@ -410,9 +417,8 @@ function EditUserForm({
           </p>
         }
         confirmLabel="Löschen"
-        loading={deleteUser.isPending}
         error={deleteError}
-        onConfirm={() => void handleDelete()}
+        onConfirm={handleDelete}
         onClose={() => {
           setConfirmDelete(false);
           setDeleteError(null);

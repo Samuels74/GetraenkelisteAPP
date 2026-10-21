@@ -574,13 +574,25 @@ export class BrowserHolder {
     if (this.browser?.isConnected()) return this.browser;
     this.launching ??= (async () => {
       const before = childPids();
-      const browser = await chromium.launch({
-        headless: true,
-        timeout: 60_000,
-        handleSIGINT: false,
-        handleSIGTERM: false,
-        handleSIGHUP: false,
-      });
+      const browser = await chromium
+        .launch({
+          headless: true,
+          timeout: 60_000,
+          handleSIGINT: false,
+          handleSIGTERM: false,
+          handleSIGHUP: false,
+        })
+        .catch((error: unknown) => {
+          // a fresh machine: the package's Playwright has no browser yet (the load test never downloads one)
+          if (/Executable doesn't exist|playwright install/i.test(String((error as Error)?.message ?? error))) {
+            throw new Error(
+              "Chromium for the browser checks is not installed (the build of loadtest/package.json's Playwright) – " +
+                'install it once with: cd loadtest && npx playwright install chromium – or skip the browser checks with LOADTEST_UI=0',
+              { cause: error },
+            );
+          }
+          throw error;
+        });
       this.pid = [...childPids()].find((pid) => !before.has(pid) && isBrowserProcess(pid)) ?? null;
       this.browser = browser;
       browser.on('disconnected', () => {

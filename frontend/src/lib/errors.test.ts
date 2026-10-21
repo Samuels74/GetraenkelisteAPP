@@ -1,9 +1,27 @@
 import { ClientResponseError } from 'pocketbase';
-import { describeError, errorMessage, isGenericEnglishMessage, isUnauthorized } from './errors';
+import {
+  describeError,
+  errorMessage,
+  isConnectionProblem,
+  isGenericEnglishMessage,
+  isPocketBaseError,
+  isPocketBaseNotFound,
+  isUnauthorized,
+} from './errors';
 
 function pbError(status: number, message: string, data: Record<string, unknown> = {}): ClientResponseError {
   return new ClientResponseError({ url: 'http://x/api', status, response: { status, message, data } });
 }
+
+/**
+ * What the SDK makes of a page that is not PocketBase's JSON (a reverse proxy's
+ * "404 page not found" or 502 HTML): the body does not parse, `response` is `{}`.
+ */
+function proxyPage(status: number): ClientResponseError {
+  return new ClientResponseError({ url: 'http://x/api', status, data: {} });
+}
+
+const UNREACHABLE = 'Der Server ist gerade nicht erreichbar. Bitte versuche es gleich noch einmal.';
 
 describe('describeError', () => {
   it('passes German hook messages through', () => {
@@ -158,6 +176,22 @@ describe('describeError', () => {
     expect(errorMessage(new ClientResponseError({ isAbort: true }))).toBe('Die Anfrage wurde abgebrochen.');
     expect(errorMessage(new Error('boom'))).toBe('Unerwarteter Fehler. Bitte versuche es erneut.');
   });
+
+  it('a proxy\'s page instead of PocketBase\'s answer: "server unreachable" – never "logged out", "not found", "disabled" (M1)', () => {
+    for (const status of [401, 403, 404, 500, 502, 503, 504]) {
+      expect(errorMessage(proxyPage(status), 'bookings')).toBe(UNREACHABLE);
+    }
+    expect(errorMessage(proxyPage(403), 'auth')).toBe(UNREACHABLE);
+    expect(errorMessage(proxyPage(401), 'auth')).toBe(UNREACHABLE);
+    // what is true whoever says it
+    expect(errorMessage(proxyPage(429))).toBe('Zu viele Anfragen – bitte kurz warten.');
+    expect(errorMessage(proxyPage(413))).toBe('Die Anfrage ist zu groß.');
+    // PocketBase's own answers keep their meaning
+    expect(errorMessage(pbError(404, "The requested resource wasn't found."))).toContain('Nicht gefunden');
+    expect(errorMessage(pbError(502, 'Something went wrong while processing your request.'))).toBe(
+      'Serverfehler. Bitte versuche es später erneut.',
+    );
+  });
 });
 
 describe('helpers', () => {
@@ -170,5 +204,29 @@ describe('helpers', () => {
     expect(isUnauthorized(pbError(401, 'x'))).toBe(true);
     expect(isUnauthorized(pbError(403, 'x'))).toBe(false);
     expect(isUnauthorized(new Error('x'))).toBe(false);
+    expect(isUnauthorized(proxyPage(401))).toBe(false);
+  });
+
+  it('tells PocketBase\'s JSON answers from pages of something in front of it', () => {
+    expect(isPocketBaseError(pbError(401, 'The request requires valid record authorization token.'))).toBe(true);
+    expect(isPocketBaseError(pbError(400, 'Dieses Angebot ist nicht aktiv.'))).toBe(true);
+    expect(isPocketBaseError(proxyPage(404))).toBe(false);
+    // JSON of another kind (some proxies answer JSON, too)
+    expect(isPocketBaseError(new ClientResponseError({ status: 404, response: { message: 'no Route matched' } }))).toBe(false);
+    expect(isPocketBaseError(new ClientResponseError({ status: 0, response: {} }))).toBe(false);
+    expect(isPocketBaseError(new Error('x'))).toBe(false);
+    expect(isPocketBaseNotFound(pbError(404, "The requested resource wasn't found."))).toBe(true);
+    expect(isPocketBaseNotFound(proxyPage(404))).toBe(false);
+  });
+
+  it('connection problems: no answer, a server error or a proxy\'s page – not PocketBase\'s 4xx', () => {
+    expect(isConnectionProblem(new ClientResponseError({ status: 0, response: {} }))).toBe(true);
+    expect(isConnectionProblem(new ClientResponseError({ isAbort: true }))).toBe(true);
+    expect(isConnectionProblem(proxyPage(404))).toBe(true);
+    expect(isConnectionProblem(proxyPage(502))).toBe(true);
+    expect(isConnectionProblem(pbError(500, 'Something went wrong while processing your request.'))).toBe(true);
+    expect(isConnectionProblem(pbError(404, "The requested resource wasn't found."))).toBe(false);
+    expect(isConnectionProblem(pbError(400, 'Failed to create record.'))).toBe(false);
+    expect(isConnectionProblem(new Error('boom'))).toBe(false);
   });
 });

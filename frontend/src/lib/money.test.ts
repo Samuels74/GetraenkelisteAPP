@@ -1,4 +1,18 @@
-import { formatCents, formatCentsPlain, parseMoneyToCents } from './money';
+import { formatCents, formatCentsPlain, formatCount, parseMoneyToCents } from './money';
+
+describe('formatCount', () => {
+  it.each([
+    [0, '0'],
+    [7, '7'],
+    [999, '999'],
+    [1000, '1.000'],
+    [14927, '14.927'],
+    [-2500, '-2.500'],
+    [1234567, '1.234.567'],
+  ])('%i → %s (grouped like the amounts)', (count, expected) => {
+    expect(formatCount(count)).toBe(expected);
+  });
+});
 
 const nbsp = ' ';
 

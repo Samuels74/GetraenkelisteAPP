@@ -1,4 +1,5 @@
 import { NavLink, Outlet } from 'react-router';
+import { ConnectionHint } from '../../components/ConnectionHint';
 import { cn } from '../../components/ui/cn';
 import { PageHeader } from '../../components/ui/PageHeader';
 
@@ -13,9 +14,10 @@ export function AdminLayout() {
     <>
       <PageHeader title="Verwaltung" />
       <nav aria-label="Verwaltung" className="mb-4">
-        <ul className="flex gap-1 rounded-2xl bg-surface-2 p-1">
+        {/* the tabs wrap instead of overflowing (narrow phones with large text) */}
+        <ul className="flex flex-wrap gap-1 rounded-2xl bg-surface-2 p-1">
           {TABS.map((tab) => (
-            <li key={tab.to} className="flex-1">
+            <li key={tab.to} className="min-w-fit flex-1">
               <NavLink
                 to={tab.to}
                 data-testid={tab.testId}
@@ -32,6 +34,7 @@ export function AdminLayout() {
           ))}
         </ul>
       </nav>
+      <ConnectionHint className="mb-4" />
       <Outlet />
     </>
   );

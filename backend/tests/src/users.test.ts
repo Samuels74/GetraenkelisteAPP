@@ -12,6 +12,7 @@ import {
   superuser,
   totals,
   uid,
+  withOnlyActiveAdmins,
 } from "./helpers";
 
 describe("users: creation", () => {
@@ -243,6 +244,109 @@ describe("users: own password change requires the current password (admins too)"
     const reset = await su.collection("users").update(user.record.id, { password: NEW, passwordConfirm: NEW });
     expect(reset.mustChangePassword).toBe(true);
     await login(user.username, NEW);
+  });
+});
+
+describe("users: the own mustChangePassword ends only with a real password change", () => {
+  it("rejects a new password equal to the current one (users and admins) – the flag stays", async () => {
+    for (const role of ["user", "admin"] as const) {
+      const account = await createUser({ role });
+      const same = { oldPassword: account.password, password: account.password, passwordConfirm: account.password };
+      await expectApiError(account.pb.collection("users").update(account.record.id, same), 400, MESSAGES.samePassword);
+
+      const relogged = await login(account.username, account.password);
+      expect(relogged.authStore.record?.mustChangePassword, role).toBe(true);
+    }
+  });
+
+  it("still requires the correct current password first (no hint about the new one)", async () => {
+    const user = await createUser();
+    const error = await expectApiError(
+      user.pb.collection("users").update(user.record.id, {
+        oldPassword: "wrong-password",
+        password: user.password,
+        passwordConfirm: user.password,
+      }),
+      400,
+    );
+    expect(error.response.data.oldPassword?.code).toBe("validation_invalid_old_password");
+  });
+
+  it("does not let admins set or clear their own flag without a password change", async () => {
+    const admin = await createUser({ role: "admin" });
+    await expectApiError(
+      admin.pb.collection("users").update(admin.record.id, { mustChangePassword: false }),
+      400,
+      MESSAGES.ownMustChangePassword,
+    );
+    expect((await admin.pb.collection("users").getOne(admin.record.id)).mustChangePassword).toBe(true);
+
+    // a real change clears it; setting it again on the own record is refused as well
+    await admin.pb.collection("users").update(admin.record.id, {
+      oldPassword: admin.password,
+      password: "admin-own-new",
+      passwordConfirm: "admin-own-new",
+    });
+    const relogged = await login(admin.username, "admin-own-new");
+    await expectApiError(
+      relogged.collection("users").update(admin.record.id, { mustChangePassword: true, name: "Chef" }),
+      400,
+      MESSAGES.ownMustChangePassword,
+    );
+    expect(await relogged.collection("users").getOne(admin.record.id)).toMatchObject({ mustChangePassword: false, name: "" });
+  });
+
+  it("lets admins and superusers set or clear the flag of other users", async () => {
+    const admin = await createUser({ role: "admin" });
+    const user = await createUser();
+    expect((await admin.pb.collection("users").update(user.record.id, { mustChangePassword: false })).mustChangePassword).toBe(false);
+    expect((await admin.pb.collection("users").update(user.record.id, { mustChangePassword: true })).mustChangePassword).toBe(true);
+    const su = await superuser();
+    expect((await su.collection("users").update(user.record.id, { mustChangePassword: false })).mustChangePassword).toBe(false);
+  });
+});
+
+describe("users: at least one active admin remains", () => {
+  it("rejects demoting, disabling or deleting the last active admin (dashboard) – other changes are fine", async () => {
+    const su = await superuser();
+    const last = await createUser({ role: "admin" });
+
+    await withOnlyActiveAdmins(su, [last.record.id], async () => {
+      for (const data of [{ role: "user" }, { disabled: true }, { role: "user", disabled: true }]) {
+        await expectApiError(su.collection("users").update(last.record.id, data), 400, MESSAGES.lastActiveAdmin);
+      }
+      await expectApiError(su.collection("users").delete(last.record.id), 400, MESSAGES.lastActiveAdmin);
+      expect((await su.collection("users").update(last.record.id, { name: "Die Letzte" })).name).toBe("Die Letzte");
+      expect(await su.collection("users").getOne(last.record.id)).toMatchObject({ role: "admin", disabled: false });
+    });
+  });
+
+  it("reports field errors of an admin's change to another user as before (checked and written in one transaction)", async () => {
+    const admin = await createUser({ role: "admin" });
+    const user = await createUser();
+    const other = await createUser();
+    const taken = await expectApiError(admin.pb.collection("users").update(user.record.id, { username: other.username }), 400);
+    expect(taken.response).toMatchObject({ message: "Failed to update record.", data: { username: { code: "validation_not_unique" } } });
+    const short = await expectApiError(
+      admin.pb.collection("users").update(user.record.id, { password: "short", passwordConfirm: "short" }),
+      400,
+    );
+    expect(short.response.data.password?.code).toBe("validation_min_text_constraint");
+    expect(await admin.pb.collection("users").getOne(user.record.id)).toMatchObject({ username: user.username });
+    await login(user.username, user.password);
+  });
+
+  it("lets an admin demote, disable or delete other admins while active admins remain", async () => {
+    const admin = await createUser({ role: "admin" });
+    const [demoted, disabled, deleted] = [
+      await createUser({ role: "admin" }),
+      await createUser({ role: "admin" }),
+      await createUser({ role: "admin" }),
+    ];
+    expect((await admin.pb.collection("users").update(demoted.record.id, { role: "user" })).role).toBe("user");
+    expect((await admin.pb.collection("users").update(disabled.record.id, { disabled: true })).disabled).toBe(true);
+    await admin.pb.collection("users").delete(deleted.record.id);
+    await expectApiError(admin.pb.collection("users").getOne(deleted.record.id), 404);
   });
 });
 
